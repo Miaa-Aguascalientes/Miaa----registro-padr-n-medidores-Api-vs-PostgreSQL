@@ -59,7 +59,8 @@ def obtener_motor_postgres():
 def cargar_usuarios_conmedidor_db():
     try:
         engine_pg = obtener_motor_postgres()
-        query = 'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor" LIMIT 10'
+        # Se elimina el LIMIT 10 para procesar y afectar a todos los registros de la tabla
+        query = 'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"'
         return pd.read_sql(query, con=engine_pg)
     except Exception as e:
         st.error(f"Error al conectar con PostgreSQL: {e}")
@@ -102,7 +103,7 @@ def cargar_datos_api():
 # 3. FUNCIÓN DE MAPEO Y CRUCE DE DATOS
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
-    """Realiza el cruce por predio (cortando en el guion medio) y mapea los campos exactos"""
+    """Realiza el cruce por predio (cortando en el guion medio) y mapea los campos exactos para todos los registros"""
     df_api_merge = df_filtrado.copy()
     
     # Campo de cruce en API (predio)
@@ -143,7 +144,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     else:
         df_conmedidor_pg['key_join'] = ''
     
-    # Asignación a las columnas de la tabla de PostgreSQL
+    # Asignación masiva a las columnas de la tabla de PostgreSQL
     df_conmedidor_pg['_Serie'] = df_conmedidor_pg['key_join'].map(dict_api_serie).fillna(df_conmedidor_pg.get('_Serie', ''))
     df_conmedidor_pg['_Colonia'] = df_conmedidor_pg['key_join'].map(dict_api_colonia).fillna(df_conmedidor_pg.get('_Colonia', ''))
     df_conmedidor_pg['_Domicilio'] = df_conmedidor_pg['key_join'].map(dict_api_domicilio).fillna(df_conmedidor_pg.get('_Domicilio', ''))
