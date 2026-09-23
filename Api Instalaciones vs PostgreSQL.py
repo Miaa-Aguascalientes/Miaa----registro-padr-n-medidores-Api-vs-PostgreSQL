@@ -512,94 +512,77 @@ with tab1:
     st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
     # ==========================================
-    # NUEVA SECCIÓN: BORRAR INFORMACIÓN DE CAMPOS (SIN BORRAR FILAS)
+    # SECCIÓN ACTUALIZADA: LIMPIEZA MASIVA DE CAMPOS (SIN BORRAR FILAS)
     # ==========================================
     with st.container(border=True):
       st.markdown(
-          "#### 🧹 Limpiar Información de Campos (Sin eliminar registros)"
+          "#### 🧹 Limpieza Masiva de Campos (Sin eliminar registros)"
       )
       st.markdown(
-          "Busca un registro por su número de **_Serie** y selecciona los"
-          " campos cuyo contenido deseas vaciar (las filas se mantendrán"
-          " intactas)."
+          "Selecciona las columnas cuyos datos deseas **vaciar por completo"
+          " en toda la tabla** a la vez. Las filas se mantendrán intactas."
       )
 
-      serie_buscar = st.text_input(
-          "Introduce el número de _Serie a modificar:"
+      campos_disponibles = [
+          "_Serie",
+          "_Colonia",
+          "_Domicilio",
+          "_Instalador",
+          "_Tipo_instalador",
+          "_Lectura_actual",
+          "_Fecha_registro",
+          "_Fecha_instalacion",
+      ]
+
+      campos_a_limpiar_masivo = []
+      cols_check = st.columns(4)
+      for i, campo in enumerate(campos_disponibles):
+        with cols_check[i % 4]:
+          if st.checkbox(f"Vaciar {campo}", key=f"chk_masivo_{campo}"):
+            campos_a_limpiar_masivo.append(campo)
+
+      confirmar_masivo = st.checkbox(
+          "⚠️ Confirmo que quiero vaciar masivamente estos campos en TODA la"
+          " tabla",
+          key="chk_confirmar_masivo",
       )
 
-      if serie_buscar:
-        try:
-          engine_pg = obtener_motor_postgres()
-          query_busqueda = text(
-              'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor" WHERE'
-              ' "_Serie" = :serie'
+      if st.button(
+          "Ejecutar Limpieza Masiva",
+          type="primary",
+          key="btn_ejecutar_masivo",
+      ):
+        if not campos_a_limpiar_masivo:
+          st.error("Por favor, selecciona al menos un campo para limpiar.")
+        elif not confirmar_masivo:
+          st.error(
+              "Debes marcar la casilla de confirmación para ejecutar esta"
+              " acción masiva."
           )
-          df_resultado_busqueda = pd.read_sql(
-              query_busqueda, con=engine_pg, params={"serie": serie_buscar}
-          )
-
-          if df_resultado_busqueda.empty:
-            st.warning(
-                f"No se encontró ningún registro con la serie: {serie_buscar}"
+        else:
+          try:
+            engine_pg = obtener_motor_postgres()
+            set_clausulas = [f'"{campo}" = NULL' for campo in campos_a_limpiar_masivo]
+            set_sql = ", ".join(set_clausulas)
+            query_update_masivo = text(
+                f'UPDATE "Usuarios"."usuarios_miaa_conmedidor" SET {set_sql}'
             )
-          else:
-            st.success("¡Registro encontrado en la base de datos!")
-            st.dataframe(df_resultado_busqueda, use_container_width=True)
 
-            st.markdown(
-                "**Selecciona los campos que deseas vaciar (poner en blanco):**"
+            with engine_pg.connect() as conn_up:
+              conn_up.execute(query_update_masivo)
+              conn_up.commit()
+
+            agregar_log(
+                f"Limpieza masiva ejecutada. Campos vaciados en toda la tabla:"
+                f" {campos_a_limpiar_masivo}"
             )
-            campos_disponibles = [
-                "_Colonia",
-                "_Domicilio",
-                "_Instalador",
-                "_Tipo_instalador",
-                "_Lectura_actual",
-                "_Fecha_registro",
-                "_Fecha_instalacion",
-            ]
-
-            campos_a_limpiar = []
-            cols_check = st.columns(3)
-            for i, campo in enumerate(campos_disponibles):
-              with cols_check[i % 3]:
-                if st.checkbox(f"Vaciar {campo}", key=f"chk_{campo}"):
-                  campos_a_limpiar.append(campo)
-
-            if st.button(
-                "Ejecutar Limpieza de Campos",
-                type="primary",
-                key="btn_limpiar_campos",
-            ):
-              if not campos_a_limpiar:
-                st.error(
-                    "Por favor, selecciona al menos un campo para limpiar."
-                )
-              else:
-                set_clausulas = [f'"{campo}" = NULL' for campo in campos_a_limpiar]
-                set_sql = ", ".join(set_clausulas)
-                query_update = text(
-                    f'UPDATE "Usuarios"."usuarios_miaa_conmedidor" SET'
-                    f" {set_sql} WHERE \"_Serie\" = :serie"
-                )
-
-                with engine_pg.connect() as conn_up:
-                  conn_up.execute(query_update, {"serie": serie_buscar})
-                  conn_up.commit()
-
-                agregar_log(
-                    f"Limpieza de campos exitosa para la serie {serie_buscar}."
-                    f" Campos vaciados: {campos_a_limpiar}"
-                )
-                st.success(
-                    "¡Los campos seleccionados han sido vaciados exitosamente"
-                    " (la fila se mantiene registrada)!"
-                )
-                st.rerun()
-
-        except Exception as e:
-          st.error(f"Error al procesar la búsqueda o actualización: {e}")
+            st.success(
+                "¡Los campos seleccionados han sido vaciados en todos los"
+                " registros exitosamente!"
+            )
+            st.rerun()
+          except Exception as e:
+            st.error(f"Error al ejecutar la limpieza masiva: {e}")
 
     st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
