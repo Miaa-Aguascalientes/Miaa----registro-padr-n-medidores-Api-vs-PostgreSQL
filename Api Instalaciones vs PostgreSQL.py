@@ -59,7 +59,7 @@ def obtener_motor_postgres():
 def cargar_usuarios_conmedidor_db():
     try:
         engine_pg = obtener_motor_postgres()
-        # Se elimina el LIMIT 10 para procesar y afectar a todos los registros de la tabla
+        # Trae todos los registros pero optimizado
         query = 'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"'
         return pd.read_sql(query, con=engine_pg)
     except Exception as e:
@@ -103,23 +103,19 @@ def cargar_datos_api():
 # 3. FUNCIÓN DE MAPEO Y CRUCE DE DATOS
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
-    """Realiza el cruce por predio (cortando en el guion medio) y mapea los campos exactos para todos los registros"""
     df_api_merge = df_filtrado.copy()
     
-    # Campo de cruce en API (predio)
     col_api_predio = next((c for c in ['predio', 'predioViv', 'predio_viv', 'numeroPredio'] if c in df_api_merge.columns), None)
     if col_api_predio:
         df_api_merge['key_join'] = df_api_merge[col_api_predio].astype(str).str.strip()
     else:
         df_api_merge['key_join'] = ''
 
-    # Mapeos exactos según la estructura requerida[cite: 16]
     dict_api_serie = dict(zip(df_api_merge['key_join'], df_api_merge.get('serie', '')))
     dict_api_colonia = dict(zip(df_api_merge['key_join'], df_api_merge.get('colonia', '')))
     dict_api_domicilio = dict(zip(df_api_merge['key_join'], df_api_merge.get('domicilio', '')))
     dict_api_instalador = dict(zip(df_api_merge['key_join'], df_api_merge.get('usuarioNombre', '')))
     
-    # Regla para usuarioExterno -> _Tipo_instalador[cite: 16]
     def mapear_tipo_externo(val):
         if val in [True, 1, '1', 'true', 'True', 'YES', 'yes', 'S', 's']:
             return 'Externo'
@@ -137,14 +133,12 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     dict_api_f_reg = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaRegistro', '')))
     dict_api_f_inst = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaInstalacion', '')))
 
-    # Campo de cruce en PostgreSQL (Predio_Viv cortando en guion medio)
     col_pg_predio = next((c for c in ['Predio_Viv', 'predio_viv', 'Predio', 'predio'] if c in df_conmedidor_pg.columns), None)
     if col_pg_predio:
         df_conmedidor_pg['key_join'] = df_conmedidor_pg[col_pg_predio].astype(str).str.strip().str.split('-').str[0]
     else:
         df_conmedidor_pg['key_join'] = ''
     
-    # Asignación masiva a las columnas de la tabla de PostgreSQL
     df_conmedidor_pg['_Serie'] = df_conmedidor_pg['key_join'].map(dict_api_serie).fillna(df_conmedidor_pg.get('_Serie', ''))
     df_conmedidor_pg['_Colonia'] = df_conmedidor_pg['key_join'].map(dict_api_colonia).fillna(df_conmedidor_pg.get('_Colonia', ''))
     df_conmedidor_pg['_Domicilio'] = df_conmedidor_pg['key_join'].map(dict_api_domicilio).fillna(df_conmedidor_pg.get('_Domicilio', ''))
@@ -260,7 +254,7 @@ if not df_conmedidor_pg.empty and not df_filtrado.empty:
     df_conmedidor_pg = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
 
 # ==========================================
-# 7. ESTRUCTURA DE PESTAÑAS
+# 7. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN
 # ==========================================
 tab1, tab2 = st.tabs([
     "🚰 Panel Principal y Gestión", 
@@ -307,8 +301,24 @@ with tab1:
         st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
         with st.container(border=True):
-            st.markdown("<p style='font-size:13px; font-weight:bold; margin-bottom:8px;'>Vista Previa de la Tabla Actualizada</p>", unsafe_allow_html=True)
-            st.dataframe(df_conmedidor_pg, use_container_width=True, height=450)
+            st.markdown("<p style='font-size:13px; font-weight:bold; margin-bottom:8px;'>Vista Previa de la Tabla Actualizada (Paginada)</p>", unsafe_allow_html=True)
+            
+            # --- SISTEMA DE PAGINACIÓN VISUAL ---
+            filas_por_pagina = 50
+            total_filas = len(df_conmedidor_pg)
+            total_paginas = max(1, (total_filas // filas_por_pagina) + (1 if total_filas % filas_por_pagina > 0 else 0))
+            
+            col_p1, col_p2 = st.columns([1, 3])
+            with col_p1:
+                pagina_actual = st.number_input("Página", min_value=1, max_value=total_paginas, value=1, step=1)
+            with col_p2:
+                st.markdown(f"<p style='margin-top: 25px; color: #94a3b8;'>Mostrando página {pagina_actual} de {total_paginas} (Total de registros: {total_filas:,})</p>", unsafe_allow_html=True)
+            
+            inicio_idx = (pagina_actual - 1) * filas_por_pagina
+            fin_idx = inicio_idx + filas_por_pagina
+            df_paginado = df_conmedidor_pg.iloc[inicio_idx:fin_idx]
+            
+            st.dataframe(df_paginado, use_container_width=True, height=400)
 
             if st.button("💾 Guardar Cambios Manualmente", key="btn_save_pg_conmedidor"):
                 try:
@@ -321,9 +331,17 @@ with tab1:
         st.warning("No se encontraron registros en la tabla.")
 
 with tab2:
-    st.subheader("🚰 Tabla: usuarios_miaa_conmedidor (PostgreSQL)")
+    st.subheader("🚰 Tabla: usuarios_miaa_conmedidor (PostgreSQL - Vista Completa Paginada)")
     if not df_conmedidor_pg.empty:
-        st.dataframe(df_conmedidor_pg, use_container_width=True, height=350)
+        # Paginación independiente para la pestaña 2 si se desea visualizar
+        t2_filas_por_pagina = 50
+        t2_total = len(df_conmedidor_pg)
+        t2_paginas = max(1, (t2_total // t2_filas_por_pagina) + (1 if t2_total % t2_filas_por_pagina > 0 else 0))
+        t2_pag = st.selectbox("Seleccionar página de registros PG", range(1, t2_paginas + 1), key="select_pag_t2")
+        
+        t2_ini = (t2_pag - 1) * t2_filas_por_pagina
+        t2_fin = t2_ini + t2_filas_por_pagina
+        st.dataframe(df_conmedidor_pg.iloc[t2_ini:t2_fin], use_container_width=True, height=350)
     else:
         st.warning("No hay datos cargados de PostgreSQL.")
 
@@ -331,6 +349,6 @@ with tab2:
     
     st.subheader("🌐 Tabla: Datos de la API de Instalación (Sin Fotos)")
     if not df_filtrado.empty:
-        st.dataframe(df_filtrado, use_container_width=True, height=350)
+        st.dataframe(df_filtrado.head(100), use_container_width=True, height=350)
     else:
         st.warning("No hay datos cargados desde la API.")
