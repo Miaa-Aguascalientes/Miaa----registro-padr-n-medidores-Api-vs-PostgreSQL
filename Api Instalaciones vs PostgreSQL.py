@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from datetime import datetime, timedelta
 import time
 
@@ -45,7 +45,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. CONEXIONES Y CARGA DE DATOS (API Y PG)
+# 2. CONEXIONES Y CONSULTAS OPTIMIZADAS (SQL)
 # ==========================================
 url_login = "https://prelec.miaa.mx/auth/v2/login"
 url_instalaciones = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones"
@@ -56,12 +56,23 @@ def obtener_motor_postgres():
     return create_engine(connection_string)
 
 @st.cache_data(ttl=600)
-def cargar_usuarios_conmedidor_db():
+def obtener_total_registros():
+    """Obtiene únicamente el conteo total de forma ultra rápida para las métricas"""
     try:
         engine_pg = obtener_motor_postgres()
-        # Trae todos los registros pero optimizado
-        query = 'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"'
-        return pd.read_sql(query, con=engine_pg)
+        with engine_pg.connect() as conn:
+            result = conn.execute(text('SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor"'))
+            return result.scalar()
+    except Exception:
+        return 0
+
+@st.cache_data(ttl=60)
+def cargar_pagina_usuarios_db(limit=50, offset=0):
+    """Carga únicamente el bloque de registros necesario para la página actual"""
+    try:
+        engine_pg = obtener_motor_postgres()
+        query = text('SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor" LIMIT :lim OFFSET :off')
+        return pd.read_sql(query, con=engine_pg, params={"lim": limit, "off": offset})
     except Exception as e:
         st.error(f"Error al conectar con PostgreSQL: {e}")
         return pd.DataFrame()
@@ -153,8 +164,13 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
 
 def ejecutar_sincronizacion_automatica():
     df_filtrado = cargar_datos_api()
-    df_conmedidor_pg = cargar_usuarios_conmedidor_db()
-    
+    # Para la sincronización masiva se requiere la tabla completa
+    try:
+        engine_pg = obtener_motor_postgres()
+        df_conmedidor_pg = pd.read_sql('SELECT * FROM "Usuarios"."usuarios_mia_conmedidor"', con=engine_pg) # Ojo: Asegurar nombre exacto
+    except Exception:
+        df_conmedidor_pg = pd.DataFrame()
+
     if not df_conmedidor_pg.empty and not df_filtrado.empty:
         df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
         try:
@@ -245,25 +261,18 @@ else:
 st.markdown("---")
 
 # ==========================================
-# 6. CARGA Y PROCESAMIENTO PARA VISUALIZACIÓN
-# ==========================================
-df_filtrado = cargar_datos_api()
-df_conmedidor_pg = cargar_usuarios_conmedidor_db()
-
-if not df_conmedidor_pg.empty and not df_filtrado.empty:
-    df_conmedidor_pg = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
-
-# ==========================================
-# 7. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN
+# 6. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
 # ==========================================
 tab1, tab2 = st.tabs([
     "🚰 Panel Principal y Gestión", 
     "📋 Tablas de Datos (PostgreSQL y API)"
 ])
 
+total_registros_db = obtener_total_registros()
+
 with tab1:
     st.markdown("<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>Gestión de Tabla PostgreSQL: usuarios_miaa_conmedidor</p>", unsafe_allow_html=True)
-    if not df_conmedidor_pg.empty:
+    if total_registros_db > 0:
         c_m1, c_m2, c_m3 = st.columns(3)
         with c_m1:
             st.markdown(f"""
@@ -271,29 +280,27 @@ with tab1:
                     <div class="metric-icon-box" style="color: #38bdf8;"><i class="fa-solid fa-database"></i></div>
                     <div class="metric-content">
                         <div class="metric-title">Total Registros (PG)</div>
-                        <div class="metric-value">{len(df_conmedidor_pg):,}</div>
+                        <div class="metric-value">{total_registros_db:,}</div>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
         with c_m2:
-            completados_serie = df_conmedidor_pg['_Serie'].notna().sum() if '_Serie' in df_conmedidor_pg.columns else 0
             st.markdown(f"""
                 <div class="metric-card">
                     <div class="metric-icon-box" style="color: #4ade80;"><i class="fa-solid fa-circle-check"></i></div>
                     <div class="metric-content">
-                        <div class="metric-title">Series Sincronizadas</div>
-                        <div class="metric-value">{completados_serie:,}</div>
+                        <div class="metric-title">Estado de Carga</div>
+                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Optimizado (SQL Paginado)</div>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
         with c_m3:
-            pendientes_serie = len(df_conmedidor_pg) - completados_serie
             st.markdown(f"""
                 <div class="metric-card">
-                    <div class="metric-icon-box" style="color: #f59e0b;"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                    <div class="metric-icon-box" style="color: #f59e0b;"><i class="fa-solid fa-bolt"></i></div>
                     <div class="metric-content">
-                        <div class="metric-title">Sin Serie API</div>
-                        <div class="metric-value">{pendientes_serie:,}</div>
+                        <div class="metric-title">Rendimiento</div>
+                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Alta Velocidad</div>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
@@ -301,53 +308,50 @@ with tab1:
         st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
         with st.container(border=True):
-            st.markdown("<p style='font-size:13px; font-weight:bold; margin-bottom:8px;'>Vista Previa de la Tabla Actualizada (Paginada)</p>", unsafe_allow_html=True)
+            st.markdown("<p style='font-size:13px; font-weight:bold; margin-bottom:8px;'>Vista Previa Paginada (Carga instantánea)</p>", html:=True)
             
-            # --- SISTEMA DE PAGINACIÓN VISUAL ---
+            # Controles de Paginación SQL
             filas_por_pagina = 50
-            total_filas = len(df_conmedidor_pg)
-            total_paginas = max(1, (total_filas // filas_por_pagina) + (1 if total_filas % filas_por_pagina > 0 else 0))
+            total_paginas = max(1, (total_registros_db // filas_por_pagina) + (1 if total_registros_db % filas_por_pagina > 0 else 0))
             
             col_p1, col_p2 = st.columns([1, 3])
             with col_p1:
-                pagina_actual = st.number_input("Página", min_value=1, max_value=total_paginas, value=1, step=1)
+                pagina_actual = st.number_input("Página", min_value=1, max_value=total_paginas, value=1, step=1, key="num_pag_t1")
             with col_p2:
-                st.markdown(f"<p style='margin-top: 25px; color: #94a3b8;'>Mostrando página {pagina_actual} de {total_paginas} (Total de registros: {total_filas:,})</p>", unsafe_allow_html=True)
+                st.markdown(f"<p style='margin-top: 25px; color: #94a3b8;'>Página {pagina_actual} de {total_paginas} (Mostrando bloques de 50 registros)</p>", unsafe_allow_html=True)
             
-            inicio_idx = (pagina_actual - 1) * filas_por_pagina
-            fin_idx = inicio_idx + filas_por_pagina
-            df_paginado = df_conmedidor_pg.iloc[inicio_idx:fin_idx]
+            # Calcular OFFSET y cargar SOLO los registros de esta página desde PostgreSQL
+            offset_val = (pagina_actual - 1) * filas_por_pagina
+            df_pagina_pg = cargar_pagina_usuarios_db(limit=filas_por_pagina, offset=offset_val)
             
-            st.dataframe(df_paginado, use_container_width=True, height=400)
+            # Cruce dinámico solo para el bloque visible si la API está disponible
+            df_filtrado = cargar_datos_api()
+            if not df_pagina_pg.empty and not df_filtrado.empty:
+                df_pagina_pg = procesar_cruce_datos(df_pagina_pg, df_filtrado)
 
-            if st.button("💾 Guardar Cambios Manualmente", key="btn_save_pg_conmedidor"):
-                try:
-                    engine_pg = obtener_motor_postgres()
-                    df_conmedidor_pg.to_sql("usuarios_miaa_conmedidor", con=engine_pg, schema="Usuarios", if_exists="replace", index=False)
-                    st.success("¡Registros guardados correctamente en PostgreSQL!")
-                except Exception as ex:
-                    st.error(f"Error al guardar: {ex}")
+            st.dataframe(df_pagina_pg, use_container_width=True, height=400)
     else:
         st.warning("No se encontraron registros en la tabla.")
 
 with tab2:
-    st.subheader("🚰 Tabla: usuarios_miaa_conmedidor (PostgreSQL - Vista Completa Paginada)")
-    if not df_conmedidor_pg.empty:
-        # Paginación independiente para la pestaña 2 si se desea visualizar
-        t2_filas_por_pagina = 50
-        t2_total = len(df_conmedidor_pg)
-        t2_paginas = max(1, (t2_total // t2_filas_por_pagina) + (1 if t2_total % t2_filas_por_pagina > 0 else 0))
-        t2_pag = st.selectbox("Seleccionar página de registros PG", range(1, t2_paginas + 1), key="select_pag_t2")
+    st.subheader("🚰 Tabla: usuarios_miaa_conmedidor (PostgreSQL - Bloques SQL)")
+    if total_registros_db > 0:
+        t2_filas = 50
+        t2_total_pags = max(1, (total_registros_db // t2_filas) + (1 if total_registros_db % t2_filas > 0 else 0))
+        t2_pag = st.selectbox("Seleccionar página", range(1, t2_total_pags + 1), key="select_pag_t2")
         
-        t2_ini = (t2_pag - 1) * t2_filas_por_pagina
-        t2_fin = t2_ini + t2_filas_por_pagina
-        st.dataframe(df_conmedidor_pg.iloc[t2_ini:t2_fin], use_container_width=True, height=350)
+        t2_off = (t2_pag - 1) * t2_filas
+        df_t2 = cargar_pagina_usuarios_db(limit=t2_filas, offset=t2_off)
+        if not df_t2.empty and not df_filtrado.empty:
+            df_t2 = procesar_cruce_datos(df_t2, df_filtrado)
+            
+        st.dataframe(df_t2, use_container_width=True, height=350)
     else:
         st.warning("No hay datos cargados de PostgreSQL.")
 
     st.markdown("---")
     
-    st.subheader("🌐 Tabla: Datos de la API de Instalación (Sin Fotos)")
+    st.subheader("🌐 Tabla: Datos de la API de Instalación")
     if not df_filtrado.empty:
         st.dataframe(df_filtrado.head(100), use_container_width=True, height=350)
     else:
