@@ -149,6 +149,7 @@ def cargar_datos_api():
               df = pd.DataFrame([data])
 
           if not df.empty:
+            # Eliminar columnas de fotos/imágenes
             cols_a_remover = [
                 c
                 for c in df.columns
@@ -159,6 +160,55 @@ def cargar_datos_api():
             ]
             df = df.drop(columns=cols_a_remover, errors="ignore")
 
+            # CREACIÓN OFICIAL DEL CAMPO Predio_Viv UNiendo predio y unidad
+            col_api_predio = next(
+                (
+                    c
+                    for c in [
+                        "predio",
+                        "predioViv",
+                        "predio_viv",
+                        "numeroPredio",
+                    ]
+                    if c in df.columns
+                ),
+                None,
+            )
+            col_api_unidad = next(
+                (
+                    c
+                    for c in ["unidad", "unidadViv", "unidad_viv"]
+                    if c in df.columns
+                ),
+                None,
+            )
+
+            if col_api_predio:
+
+              def construir_predio_viv(row):
+                p = (
+                    str(row[col_api_predio]).strip()
+                    if pd.notna(row[col_api_predio])
+                    else ""
+                )
+                if not p or p.lower() in ["none", "nan"]:
+                  return ""
+                u = (
+                    str(row[col_api_unidad]).strip()
+                    if col_api_unidad
+                    and pd.notna(row[col_api_unidad])
+                    and str(row[col_api_unidad]).lower()
+                    not in ["none", "nan", "0"]
+                    else ""
+                )
+                if u:
+                  return f"{p}-{u}"
+                return (
+                    p  # Si la unidad es 0, None o vacía, mantiene solo el predio
+                )
+
+              df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
+
           return df
     return pd.DataFrame()
   except Exception as e:
@@ -166,38 +216,18 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE ESTRICTO (PREDIO + UNIDAD)
+# 4. FUNCIÓN DE CRUCE ESTRICTO POR Predio_Viv
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   df_api_merge = df_filtrado.copy()
 
-  # Identificar campos de predio y unidad en la API de forma estricta
-  col_api_predio = next(
-      (
-          c
-          for c in ["predio", "predioViv", "predio_viv", "numeroPredio"]
-          if c in df_api_merge.columns
-      ),
-      None,
-  )
-  col_api_unidad = next(
-      (c for c in ["unidad", "unidadViv", "unidad_viv"] if c in df_api_merge.columns),
-      None,
-  )
+  if "Predio_Viv" not in df_api_merge.columns:
+    return df_conmedidor_pg
 
-  # Construcción estricta de la llave compuesta de la API (Ej: "750648-21")
-  def construir_llave_api(row):
-    p = str(row[col_api_predio]).strip() if col_api_predio else ""
-    u = (
-        str(row[col_api_unidad]).strip()
-        if col_api_unidad and pd.notna(row[col_api_unidad])
-        else ""
-    )
-    if u and u != "None" and u != "nan" and u != "0":
-      return f"{p}-{u}"
-    return p  # Si no hay unidad válida, se queda solo con el predio
-
-  df_api_merge["key_join"] = df_api_merge.apply(construir_llave_api, axis=1)
+  # Llave de cruce limpia basada en la columna recién creada
+  df_api_merge["key_join"] = (
+      df_api_merge["Predio_Viv"].astype(str).str.strip()
+  )
 
   dict_api_serie = dict(zip(df_api_merge["key_join"], df_api_merge.get("serie", "")))
   dict_api_colonia = dict(
@@ -237,7 +267,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       zip(df_api_merge["key_join"], df_api_merge.get("fechaInstalacion", ""))
   )
 
-  # Identificar campo de predio/vivienda en PostgreSQL
+  # Identificar campo de predio en PostgreSQL
   col_pg_predio = next(
       (
           c
@@ -248,7 +278,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   )
 
   if col_pg_predio:
-    # Llave exacta tal cual viene en PostgreSQL (Ej: "750648-26") sin eliminar la unidad del guion
     df_conmedidor_pg["key_join"] = (
         df_conmedidor_pg[col_pg_predio].astype(str).str.strip()
     )
