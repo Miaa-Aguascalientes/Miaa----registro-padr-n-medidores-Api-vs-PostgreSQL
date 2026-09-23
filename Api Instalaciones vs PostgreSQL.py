@@ -57,7 +57,6 @@ def obtener_motor_postgres():
 
 @st.cache_data(ttl=600)
 def obtener_total_registros():
-    """Obtiene únicamente el conteo total de forma ultra rápida para las métricas"""
     try:
         engine_pg = obtener_motor_postgres()
         with engine_pg.connect() as conn:
@@ -68,7 +67,6 @@ def obtener_total_registros():
 
 @st.cache_data(ttl=60)
 def cargar_pagina_usuarios_db(limit=50, offset=0):
-    """Carga únicamente el bloque de registros necesario para la página actual"""
     try:
         engine_pg = obtener_motor_postgres()
         query = text('SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor" LIMIT :lim OFFSET :off')
@@ -164,10 +162,9 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
 
 def ejecutar_sincronizacion_automatica():
     df_filtrado = cargar_datos_api()
-    # Para la sincronización masiva se requiere la tabla completa
     try:
         engine_pg = obtener_motor_postgres()
-        df_conmedidor_pg = pd.read_sql('SELECT * FROM "Usuarios"."usuarios_mia_conmedidor"', con=engine_pg) # Ojo: Asegurar nombre exacto
+        df_conmedidor_pg = pd.read_sql('SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg)
     except Exception:
         df_conmedidor_pg = pd.DataFrame()
 
@@ -201,21 +198,23 @@ st.markdown("---")
 st.markdown("#### Configuración")
 
 with st.container(border=True):
-    c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 1])
+    c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
     with c1:
         modo = st.selectbox("Modo", ["Periódico"], label_visibility="collapsed")
     with c2:
-        horas = st.number_input("Horas", min_value=0, max_value=24, value=0, step=1, label_visibility="collapsed")
+        opciones_intervalo = {
+            "Cada 1 minuto": 60,
+            "Cada 5 minutos": 300,
+            "Cada 15 minutos": 900,
+            "Cada 30 minutos": 1800,
+            "Cada hora": 3600
+        }
+        intervalo_sel = st.selectbox("Intervalo", list(opciones_intervalo.keys()), label_visibility="collapsed")
+        total_segundos = opciones_intervalo[intervalo_sel]
     with c3:
-        minutos = st.number_input("Minutos", min_value=0, max_value=59, value=5, step=1, label_visibility="collapsed")
-    with c4:
         btn_iniciar = st.button("INICIAR", type="primary", use_container_width=True)
-    with c5:
+    with c4:
         btn_parar = st.button("PARAR", type="secondary", use_container_width=True)
-
-total_segundos = (horas * 3600) + (minutos * 60)
-if total_segundos < 1:
-    total_segundos = 60
 
 if btn_iniciar:
     st.session_state.is_running = True
@@ -308,9 +307,8 @@ with tab1:
         st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
         with st.container(border=True):
-            st.markdown("<p style='font-size:13px; font-weight:bold; margin-bottom:8px;'>Vista Previa Paginada (Carga instantánea)</p>", html:=True)
+            st.markdown("<p style='font-size:13px; font-weight:bold; margin-bottom:8px;'>Vista Previa Paginada (Carga instantánea)</p>", unsafe_allow_html=True)
             
-            # Controles de Paginación SQL
             filas_por_pagina = 50
             total_paginas = max(1, (total_registros_db // filas_por_pagina) + (1 if total_registros_db % filas_por_pagina > 0 else 0))
             
@@ -320,11 +318,9 @@ with tab1:
             with col_p2:
                 st.markdown(f"<p style='margin-top: 25px; color: #94a3b8;'>Página {pagina_actual} de {total_paginas} (Mostrando bloques de 50 registros)</p>", unsafe_allow_html=True)
             
-            # Calcular OFFSET y cargar SOLO los registros de esta página desde PostgreSQL
             offset_val = (pagina_actual - 1) * filas_por_pagina
             df_pagina_pg = cargar_pagina_usuarios_db(limit=filas_por_pagina, offset=offset_val)
             
-            # Cruce dinámico solo para el bloque visible si la API está disponible
             df_filtrado = cargar_datos_api()
             if not df_pagina_pg.empty and not df_filtrado.empty:
                 df_pagina_pg = procesar_cruce_datos(df_pagina_pg, df_filtrado)
