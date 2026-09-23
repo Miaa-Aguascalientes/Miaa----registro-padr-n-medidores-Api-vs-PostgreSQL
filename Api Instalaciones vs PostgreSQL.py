@@ -668,7 +668,7 @@ with tab1:
         )
       with col_p2:
         st.markdown(
-            f"<p style='margin-top: 25px; color: #94a3b8;' >Página"
+            f"<p style='margin-top: 25px; color: #94a3b8;'>Página"
             f" {pagina_actual} de {total_paginas} (Mostrando bloques de 50"
             " registros)</p>",
             unsafe_allow_html=True,
@@ -716,7 +716,6 @@ with tab2:
       "🌐 Tabla: Datos de la API de Instalación (Todos los registros)"
   )
   if not df_filtrado.empty:
-    # Mostramos TODO el DataFrame sin .head() para que aparezcan todos los registros existentes
     st.dataframe(df_filtrado, use_container_width=True, height=350)
   else:
     st.warning("No hay datos cargados desde la API.")
