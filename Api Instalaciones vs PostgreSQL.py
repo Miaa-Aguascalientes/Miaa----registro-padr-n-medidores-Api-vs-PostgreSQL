@@ -82,12 +82,22 @@ def cargar_datos_api():
                 if res_inst.status_code == 200:
                     data = res_inst.json()
                     if isinstance(data, list):
-                        return pd.DataFrame(data)
+                        df = pd.DataFrame(data)
                     elif isinstance(data, dict):
+                        df = pd.DataFrame()
                         for key in ['data', 'result', 'items', 'instalaciones']:
                             if key in data and isinstance(data[key], list):
-                                return pd.DataFrame(data[key])
-                        return pd.DataFrame([data])
+                                df = pd.DataFrame(data[key])
+                                break
+                        if df.empty:
+                            df = pd.DataFrame([data])
+                    
+                    # Eliminar campos relacionados con fotos o imágenes de la API
+                    if not df.empty:
+                        cols_a_remover = [c for c in df.columns if any(term in c.lower() for term in ['foto', 'imagen', 'img', 'fotografia'])]
+                        df = df.drop(columns=cols_a_remover, errors='ignore')
+                    
+                    return df
         return pd.DataFrame()
     except Exception as e:
         st.sidebar.error(f"Error al conectar con la API: {e}")
@@ -102,7 +112,7 @@ df_conmedidor_pg = cargar_usuarios_conmedidor_db()
 # ==========================================
 st.sidebar.markdown("<h2>⚙️ Panel de Control</h2>", unsafe_allow_html=True)
 st.sidebar.markdown("---")
-st.sidebar.info("Panel lateral restaurado correctamente.")
+st.sidebar.info("Panel lateral configurado correctamente.")
 st.sidebar.metric("Registros API Cargados", len(df_filtrado))
 st.sidebar.metric("Registros PostgreSQL (Limit 10)", len(df_conmedidor_pg))
 
@@ -112,7 +122,7 @@ st.sidebar.metric("Registros PostgreSQL (Limit 10)", len(df_conmedidor_pg))
 if not df_conmedidor_pg.empty and not df_filtrado.empty:
     df_api_merge = df_filtrado.copy()
     
-    # Extraer el campo predio de la API (buscando 'predio', 'predioViv' o similares y limpiando espacios)
+    # Extraer el campo predio de la API limpiando espacios
     col_api_predio = next((c for c in ['predio', 'predioViv', 'predio_viv', 'numeroPredio'] if c in df_api_merge.columns), None)
     if col_api_predio:
         df_api_merge['key_join'] = df_api_merge[col_api_predio].astype(str).str.strip().str.split('-').str[0]
@@ -128,7 +138,7 @@ if not df_conmedidor_pg.empty and not df_filtrado.empty:
     dict_api_f_reg = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaRegistro', '')))
     dict_api_f_inst = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaInstalacion', '')))
 
-    # Procesar 'Predio_Viv' en PostgreSQL ignorando el guion medio y lo posterior
+    # Procesar 'Predio_Viv' en PostgreSQL ignorando el guion medio y lo posterior para el match
     col_pg_predio = next((c for c in ['Predio_Viv', 'predio_viv', 'Predio', 'predio'] if c in df_conmedidor_pg.columns), None)
     if col_pg_predio:
         df_conmedidor_pg['key_join'] = df_conmedidor_pg[col_pg_predio].astype(str).str.strip().str.split('-').str[0]
@@ -221,7 +231,7 @@ with tab2:
 
     st.markdown("---")
     
-    st.subheader("🌐 Tabla: Datos de la API de Instalación de Medidores")
+    st.subheader("🌐 Tabla: Datos de la API de Instalación de Medidores (Sin Fotos)")
     if not df_filtrado.empty:
         st.dataframe(df_filtrado, use_container_width=True, height=350)
     else:
