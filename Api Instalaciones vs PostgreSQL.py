@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 from sqlalchemy import create_engine
 from datetime import datetime, timedelta
-from streamlit_autorefresh import st_autorefresh
+import time
 
 # ==========================================
 # 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS
@@ -88,7 +88,6 @@ def cargar_datos_api():
                         if df.empty:
                             df = pd.DataFrame([data])
                     
-                    # Eliminar campos relacionados con fotos o imágenes de la API
                     if not df.empty:
                         cols_a_remover = [c for c in df.columns if any(term in c.lower() for term in ['foto', 'imagen', 'img', 'fotografia'])]
                         df = df.drop(columns=cols_a_remover, errors='ignore')
@@ -100,61 +99,72 @@ def cargar_datos_api():
         return pd.DataFrame()
 
 # ==========================================
-# 3. GESTIÓN DE ESTADO PARA EL TEMPORIZADOR
+# 3. FUNCIÓN DE MAPEO Y CRUCE DE DATOS
 # ==========================================
-if 'is_running' not in st.session_state:
-    st.session_state.is_running = False
-if 'next_run_time' not in st.session_state:
-    st.session_state.next_run_time = None
-if 'total_seconds_interval' not in st.session_state:
-    st.session_state.total_seconds_interval = 60
+def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
+    """Realiza el cruce por predio (cortando en el guion medio) y mapea los campos exactos"""
+    df_api_merge = df_filtrado.copy()
+    
+    # Campo de cruce en API (predio)
+    col_api_predio = next((c for c in ['predio', 'predioViv', 'predio_viv', 'numeroPredio'] if c in df_api_merge.columns), None)
+    if col_api_predio:
+        df_api_merge['key_join'] = df_api_merge[col_api_predio].astype(str).str.strip()
+    else:
+        df_api_merge['key_join'] = ''
+
+    # Mapeos exactos según la estructura requerida[cite: 16]
+    dict_api_serie = dict(zip(df_api_merge['key_join'], df_api_merge.get('serie', '')))
+    dict_api_colonia = dict(zip(df_api_merge['key_join'], df_api_merge.get('colonia', '')))
+    dict_api_domicilio = dict(zip(df_api_merge['key_join'], df_api_merge.get('domicilio', '')))
+    dict_api_instalador = dict(zip(df_api_merge['key_join'], df_api_merge.get('usuarioNombre', '')))
+    
+    # Regla para usuarioExterno -> _Tipo_instalador[cite: 16]
+    def mapear_tipo_externo(val):
+        if val in [True, 1, '1', 'true', 'True', 'YES', 'yes', 'S', 's']:
+            return 'Externo'
+        elif val in [False, 0, '0', 'false', 'False', 'NO', 'no', 'N', 'n']:
+            return 'MIAA'
+        return 'MIAA'
+
+    if 'usuarioExterno' in df_api_merge.columns:
+        df_api_merge['tipo_calculado'] = df_api_merge['usuarioExterno'].apply(mapear_tipo_externo)
+        dict_api_tipo_inst = dict(zip(df_api_merge['key_join'], df_api_merge['tipo_calculado']))
+    else:
+        dict_api_tipo_inst = {}
+
+    dict_api_lectura = dict(zip(df_api_merge['key_join'], df_api_merge.get('lecturaActual', 0)))
+    dict_api_f_reg = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaRegistro', '')))
+    dict_api_f_inst = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaInstalacion', '')))
+
+    # Campo de cruce en PostgreSQL (Predio_Viv cortando en guion medio)
+    col_pg_predio = next((c for c in ['Predio_Viv', 'predio_viv', 'Predio', 'predio'] if c in df_conmedidor_pg.columns), None)
+    if col_pg_predio:
+        df_conmedidor_pg['key_join'] = df_conmedidor_pg[col_pg_predio].astype(str).str.strip().str.split('-').str[0]
+    else:
+        df_conmedidor_pg['key_join'] = ''
+    
+    # Asignación a las columnas de la tabla de PostgreSQL
+    df_conmedidor_pg['_Serie'] = df_conmedidor_pg['key_join'].map(dict_api_serie).fillna(df_conmedidor_pg.get('_Serie', ''))
+    df_conmedidor_pg['_Colonia'] = df_conmedidor_pg['key_join'].map(dict_api_colonia).fillna(df_conmedidor_pg.get('_Colonia', ''))
+    df_conmedidor_pg['_Domicilio'] = df_conmedidor_pg['key_join'].map(dict_api_domicilio).fillna(df_conmedidor_pg.get('_Domicilio', ''))
+    df_conmedidor_pg['_Instalador'] = df_conmedidor_pg['key_join'].map(dict_api_instalador).fillna(df_conmedidor_pg.get('_Instalador', ''))
+    df_conmedidor_pg['_Tipo_instalador'] = df_conmedidor_pg['key_join'].map(dict_api_tipo_inst).fillna(df_conmedidor_pg.get('_Tipo_instalador', 'MIAA'))
+    df_conmedidor_pg['_Lectura_actual'] = pd.to_numeric(df_conmedidor_pg['key_join'].map(dict_api_lectura), errors='coerce').fillna(df_conmedidor_pg.get('_Lectura_actual', 0))
+    df_conmedidor_pg['_Fecha_registro'] = pd.to_datetime(df_conmedidor_pg['key_join'].map(dict_api_f_reg), errors='coerce').fillna(df_conmedidor_pg.get('_Fecha_registro', pd.NaT))
+    df_conmedidor_pg['_Fecha_instalacion'] = pd.to_datetime(df_conmedidor_pg['key_join'].map(dict_api_f_inst), errors='coerce').fillna(df_conmedidor_pg.get('_Fecha_instalacion', pd.NaT))
+    
+    df_conmedidor_pg = df_conmedidor_pg.drop(columns=['key_join'], errors='ignore')
+    return df_conmedidor_pg
 
 def ejecutar_sincronizacion_automatica():
-    """Ejecuta el cruce de datos por predio, traspasa serie y guarda en PostgreSQL"""
     df_filtrado = cargar_datos_api()
     df_conmedidor_pg = cargar_usuarios_conmedidor_db()
     
     if not df_conmedidor_pg.empty and not df_filtrado.empty:
-        df_api_merge = df_filtrado.copy()
-        
-        col_api_predio = next((c for c in ['predio', 'predioViv', 'predio_viv', 'numeroPredio'] if c in df_api_merge.columns), None)
-        if col_api_predio:
-            df_api_merge['key_join'] = df_api_merge[col_api_predio].astype(str).str.strip()
-        else:
-            df_api_merge['key_join'] = ''
-
-        col_api_serie = next((c for c in ['serie', 'serieMedidor'] if c in df_api_merge.columns), None)
-        dict_api_serie = dict(zip(df_api_merge['key_join'], df_api_merge[col_api_serie])) if col_api_serie else {}
-
-        dict_api_colonia = dict(zip(df_api_merge['key_join'], df_api_merge.get('colonia', '')))
-        dict_api_domicilio = dict(zip(df_api_merge['key_join'], df_api_merge.get('domicilio', '')))
-        dict_api_instalador = dict(zip(df_api_merge['key_join'], df_api_merge.get('usuarioNombre', df_api_merge.get('instalador', ''))))
-        dict_api_tipo_inst = dict(zip(df_api_merge['key_join'], df_api_merge.get('tipo_instalacion_nombre', '')))
-        dict_api_lectura = dict(zip(df_api_merge['key_join'], df_api_merge.get('lecturaActual', df_api_merge.get('lectura_actual', 0))))
-        dict_api_f_reg = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaRegistro', '')))
-        dict_api_f_inst = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaInstalacion', '')))
-
-        col_pg_predio = next((c for c in ['Predio_Viv', 'predio_viv', 'Predio', 'predio'] if c in df_conmedidor_pg.columns), None)
-        if col_pg_predio:
-            df_conmedidor_pg['key_join'] = df_conmedidor_pg[col_pg_predio].astype(str).str.strip().str.split('-').str[0]
-        else:
-            df_conmedidor_pg['key_join'] = ''
-        
-        # Traspasar 'serie' de la API hacia '_Serie' en PostgreSQL
-        df_conmedidor_pg['_Serie'] = df_conmedidor_pg['key_join'].map(dict_api_serie).fillna(df_conmedidor_pg.get('_Serie', ''))
-        df_conmedidor_pg['_Colonia'] = df_conmedidor_pg['key_join'].map(dict_api_colonia).fillna(df_conmedidor_pg.get('_Colonia', ''))
-        df_conmedidor_pg['_Domicilio'] = df_conmedidor_pg['key_join'].map(dict_api_domicilio).fillna(df_conmedidor_pg.get('_Domicilio', ''))
-        df_conmedidor_pg['_Instalador'] = df_conmedidor_pg['key_join'].map(dict_api_instalador).fillna(df_conmedidor_pg.get('_Instalador', ''))
-        df_conmedidor_pg['_Tipo_instalador'] = df_conmedidor_pg['key_join'].map(dict_api_tipo_inst).fillna(df_conmedidor_pg.get('_Tipo_instalador', ''))
-        df_conmedidor_pg['_Lectura_actual'] = pd.to_numeric(df_conmedidor_pg['key_join'].map(dict_api_lectura), errors='coerce').fillna(df_conmedidor_pg.get('_Lectura_actual', 0))
-        df_conmedidor_pg['_Fecha_registro'] = pd.to_datetime(df_conmedidor_pg['key_join'].map(dict_api_f_reg), errors='coerce').fillna(df_conmedidor_pg.get('_Fecha_registro', pd.NaT))
-        df_conmedidor_pg['_Fecha_instalacion'] = pd.to_datetime(df_conmedidor_pg['key_join'].map(dict_api_f_inst), errors='coerce').fillna(df_conmedidor_pg.get('_Fecha_instalacion', pd.NaT))
-        
-        df_conmedidor_pg = df_conmedidor_pg.drop(columns=['key_join'], errors='ignore')
-
+        df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
         try:
             engine_pg = obtener_motor_postgres()
-            df_conmedidor_pg.to_sql("usuarios_miaa_conmedidor", con=engine_pg, schema="Usuarios", if_exists="replace", index=False)
+            df_actualizado.to_sql("usuarios_miaa_conmedidor", con=engine_pg, schema="Usuarios", if_exists="replace", index=False)
             return True
         except Exception as ex:
             st.error(f"Error al actualizar en PostgreSQL: {ex}")
@@ -162,12 +172,22 @@ def ejecutar_sincronizacion_automatica():
     return False
 
 # ==========================================
-# 4. TÍTULO Y PANEL DE CONFIGURACIÓN DE TIEMPO
+# 4. GESTIÓN DE ESTADO PARA EL TEMPORIZADOR
+# ==========================================
+if 'is_running' not in st.session_state:
+    st.session_state.is_running = False
+if 'next_run_time' not in st.session_state:
+    st.session_state.next_run_time = None
+if 'total_seconds_interval' not in st.session_state:
+    st.session_state.total_seconds_interval = 300
+
+# ==========================================
+# 5. TÍTULO Y PANEL DE CONFIGURACIÓN DE TIEMPO
 # ==========================================
 st.markdown("<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True)
 st.markdown("---")
 
-st.markdown("#### Configuración de Sincronización Automática")
+st.markdown("#### Configuración")
 
 with st.container(border=True):
     c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 1])
@@ -191,27 +211,26 @@ if btn_iniciar:
     st.session_state.total_seconds_interval = total_segundos
     st.session_state.next_run_time = datetime.now() + timedelta(seconds=total_segundos)
     st.success("¡Temporizador iniciado correctamente!")
+    st.rerun()
 
 if btn_parar:
     st.session_state.is_running = False
     st.session_state.next_run_time = None
     st.warning("Temporizador detenido.")
+    st.rerun()
 
-# Manejo de la cuenta regresiva en tiempo real si está activo
-if st.session_state.is_running:
-    st_autorefresh(interval=1000, key="timer_live_refresh")
-    
+placeholder_timer = st.empty()
+
+if st.session_state.is_running and st.session_state.next_run_time:
     ahora = datetime.now()
-    if st.session_state.next_run_time and ahora >= st.session_state.next_run_time:
+    if ahora >= st.session_state.next_run_time:
         exito = ejecutar_sincronizacion_automatica()
         if exito:
             st.toast("¡Datos sincronizados y guardados en PostgreSQL con éxito!", icon="🚰")
         st.session_state.next_run_time = datetime.now() + timedelta(seconds=st.session_state.total_seconds_interval)
-    
-    if st.session_state.next_run_time:
+        st.rerun()
+    else:
         restante = (st.session_state.next_run_time - ahora).total_seconds()
-        if restante < 0:
-            restante = 0
         porcentaje = int(((st.session_state.total_seconds_interval - restante) / st.session_state.total_seconds_interval) * 100)
         
         hrs_r = int(restante // 3600)
@@ -219,57 +238,28 @@ if st.session_state.is_running:
         sec_r = int(restante % 60)
         tiempo_str = f"{hrs_r:02d}:{min_r:02d}:{sec_r:02d}"
         
-        st.markdown(f"<p style='color: #38bdf8; font-weight: bold; font-size: 15px; margin-top: 10px;'>PRÓXIMA CARGA EN: {tiempo_str}</p>", unsafe_allow_html=True)
-        st.progress(min(porcentaje, 100), text=f"Progreso del ciclo: {porcentaje}%")
+        with placeholder_timer.container():
+            st.markdown(f"<p style='color: #38bdf8; font-weight: bold; font-size: 15px; margin-top: 10px;'>PRÓXIMA CARGA EN: {tiempo_str}</p>", unsafe_allow_html=True)
+            st.progress(min(max(porcentaje, 0), 100), text=f"Progreso del ciclo: {porcentaje}%")
+        
+        time.sleep(1)
+        st.rerun()
 else:
-    st.markdown("<p style='color: #94a3b8; font-size: 13px; font-style: italic;'>El temporizador se encuentra detenido. Define el tiempo y haz clic en INICIAR.</p>", unsafe_allow_html=True)
+    placeholder_timer.markdown("<p style='color: #94a3b8; font-size: 13px; font-style: italic;'>El temporizador se encuentra detenido. Define el tiempo y haz clic en INICIAR.</p>", unsafe_allow_html=True)
 
 st.markdown("---")
 
 # ==========================================
-# 5. CARGA Y CRUCE PARA VISUALIZACIÓN
+# 6. CARGA Y PROCESAMIENTO PARA VISUALIZACIÓN
 # ==========================================
 df_filtrado = cargar_datos_api()
 df_conmedidor_pg = cargar_usuarios_conmedidor_db()
 
 if not df_conmedidor_pg.empty and not df_filtrado.empty:
-    df_api_merge = df_filtrado.copy()
-    col_api_predio = next((c for c in ['predio', 'predioViv', 'predio_viv', 'numeroPredio'] if c in df_api_merge.columns), None)
-    if col_api_predio:
-        df_api_merge['key_join'] = df_api_merge[col_api_predio].astype(str).str.strip()
-    else:
-        df_api_merge['key_join'] = ''
-
-    col_api_serie = next((c for c in ['serie', 'serieMedidor'] if c in df_api_merge.columns), None)
-    dict_api_serie = dict(zip(df_api_merge['key_join'], df_api_merge[col_api_serie])) if col_api_serie else {}
-
-    dict_api_colonia = dict(zip(df_api_merge['key_join'], df_api_merge.get('colonia', '')))
-    dict_api_domicilio = dict(zip(df_api_merge['key_join'], df_api_merge.get('domicilio', '')))
-    dict_api_instalador = dict(zip(df_api_merge['key_join'], df_api_merge.get('usuarioNombre', df_api_merge.get('instalador', ''))))
-    dict_api_tipo_inst = dict(zip(df_api_merge['key_join'], df_api_merge.get('tipo_instalacion_nombre', '')))
-    dict_api_lectura = dict(zip(df_api_merge['key_join'], df_api_merge.get('lecturaActual', df_api_merge.get('lectura_actual', 0))))
-    dict_api_f_reg = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaRegistro', '')))
-    dict_api_f_inst = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaInstalacion', '')))
-
-    col_pg_predio = next((c for c in ['Predio_Viv', 'predio_viv', 'Predio', 'predio'] if c in df_conmedidor_pg.columns), None)
-    if col_pg_predio:
-        df_conmedidor_pg['key_join'] = df_conmedidor_pg[col_pg_predio].astype(str).str.strip().str.split('-').str[0]
-    else:
-        df_conmedidor_pg['key_join'] = ''
-    
-    df_conmedidor_pg['_Serie'] = df_conmedidor_pg['key_join'].map(dict_api_serie).fillna(df_conmedidor_pg.get('_Serie', ''))
-    df_conmedidor_pg['_Colonia'] = df_conmedidor_pg['key_join'].map(dict_api_colonia).fillna(df_conmedidor_pg.get('_Colonia', ''))
-    df_conmedidor_pg['_Domicilio'] = df_conmedidor_pg['key_join'].map(dict_api_domicilio).fillna(df_conmedidor_pg.get('_Domicilio', ''))
-    df_conmedidor_pg['_Instalador'] = df_conmedidor_pg['key_join'].map(dict_api_instalador).fillna(df_conmedidor_pg.get('_Instalador', ''))
-    df_conmedidor_pg['_Tipo_instalador'] = df_conmedidor_pg['key_join'].map(dict_api_tipo_inst).fillna(df_conmedidor_pg.get('_Tipo_instalador', ''))
-    df_conmedidor_pg['_Lectura_actual'] = pd.to_numeric(df_conmedidor_pg['key_join'].map(dict_api_lectura), errors='coerce').fillna(df_conmedidor_pg.get('_Lectura_actual', 0))
-    df_conmedidor_pg['_Fecha_registro'] = pd.to_datetime(df_conmedidor_pg['key_join'].map(dict_api_f_reg), errors='coerce').fillna(df_conmedidor_pg.get('_Fecha_registro', pd.NaT))
-    df_conmedidor_pg['_Fecha_instalacion'] = pd.to_datetime(df_conmedidor_pg['key_join'].map(dict_api_f_inst), errors='coerce').fillna(df_conmedidor_pg.get('_Fecha_instalacion', pd.NaT))
-    
-    df_conmedidor_pg = df_conmedidor_pg.drop(columns=['key_join'], errors='ignore')
+    df_conmedidor_pg = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
 
 # ==========================================
-# 6. ESTRUCTURA DE PESTAÑAS
+# 7. ESTRUCTURA DE PESTAÑAS
 # ==========================================
 tab1, tab2 = st.tabs([
     "🚰 Panel Principal y Gestión", 
