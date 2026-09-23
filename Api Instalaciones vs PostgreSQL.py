@@ -48,11 +48,18 @@ st.markdown("""
 # ==========================================
 # 2. CONEXIONES Y CARGA DE DATOS
 # ==========================================
+def obtener_motor_postgres():
+    """Construye y retorna el engine de SQLAlchemy usando los secretos estructurados."""
+    pg = st.secrets["postgres"]
+    # Se usa psycopg2 explícitamente en la URL de conexión
+    connection_string = f"postgresql+psycopg2://{pg['user']}:{pg['password']}@{pg['host']}:{pg['port']}/{pg['database']}"
+    return create_engine(connection_string)
+
 @st.cache_data(ttl=600)
 def cargar_usuarios_conmedidor_db():
     """Consulta la base de datos PostgreSQL para obtener la tabla usuarios_miaa_conmedidor."""
     try:
-        engine_pg = create_engine(st.secrets["postgres"]["connection_string"])
+        engine_pg = obtener_motor_postgres()
         query = 'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"'
         return pd.read_sql(query, con=engine_pg)
     except Exception as e:
@@ -201,7 +208,7 @@ with tab_conmedidor:
 
             if st.button("💾 Guardar / Actualizar Cambios en PostgreSQL", key="btn_save_pg_conmedidor"):
                 try:
-                    engine_pg = create_engine(st.secrets["postgres"]["connection_string"])
+                    engine_pg = obtener_motor_postgres()
                     df_conmedidor_pg.to_sql("usuarios_miaa_conmedidor", con=engine_pg, schema="Usuarios", if_exists="replace", index=False)
                     st.success("¡Los registros con las columnas completadas se han actualizado correctamente en PostgreSQL!")
                 except Exception as ex:
