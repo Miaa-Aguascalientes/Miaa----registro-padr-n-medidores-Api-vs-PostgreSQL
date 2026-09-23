@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-import time
 import pandas as pd
 import requests
 from sqlalchemy import create_engine, text
@@ -390,64 +389,44 @@ if btn_parar:
   st.warning("Temporizador detenido.")
   st.rerun()
 
-placeholder_timer = st.empty()
-
-if st.session_state.is_running and st.session_state.next_run_time:
-  ahora = datetime.now()
-  if ahora >= st.session_state.next_run_time:
-    ejecutar_sincronizacion_automatica()
-    st.session_state.next_run_time = datetime.now() + timedelta(
-        seconds=st.session_state.total_seconds_interval
-    )
-    st.rerun()
-  else:
-    restante = (
-        st.session_state.next_run_time - ahora
-    ).total_seconds()
-    porcentaje = int(
-        (
-            (st.session_state.total_seconds_interval - restante)
-            / st.session_state.total_seconds_interval
-        )
-        * 100
-    )
-
-    hrs_r = int(restante // 3600)
-    min_r = int((restante % 3600) // 60)
-    sec_r = int(restante % 60)
-    tiempo_str = f"{hrs_r:02d}:{min_r:02d}:{sec_r:02d}"
-
-    with placeholder_timer.container():
-      st.markdown(
-          f"<p style='color: #38bdf8; font-weight: bold; font-size: 15px;"
-          f" margin-top: 10px;'>PRÓXIMA CARGA EN: {tiempo_str}</p>",
-          unsafe_allow_html=True,
-      )
-      st.progress(
-          min(max(porcentaje, 0), 100),
-          text=f"Progreso del ciclo: {porcentaje}%",
-      )
-
-    time.sleep(1)
-    st.rerun()
-else:
-  placeholder_timer.markdown(
-      "<p style='color: #94a3b8; font-size: 13px; font-style: italic;'>El"
-      " temporizador se encuentra detenido. Define el tiempo y haz clic en"
-      " INICIAR.</p>",
-      unsafe_allow_html=True,
-  )
-
 st.markdown("---")
 
+
 # ==========================================
-# 7. CONSOLA DE REGISTROS (LOGS)
+# 7. FRAGMENTO AISLADO PARA CONSOLA Y EJECUCIÓN EN SEGUNDO PLANO
+# (Evita que toda la página se oscurezca o se bloquee)
 # ==========================================
-st.markdown("#### 🖥️ Consola de Registros del Sistema")
-logs_html = "<br>".join(st.session_state.logs)
-st.markdown(
-    f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
-)
+@st.fragment(run_every=5)
+def renderizar_consola_y_background():
+  if st.session_state.is_running and st.session_state.next_run_time:
+    ahora = datetime.now()
+    if ahora >= st.session_state.next_run_time:
+      ejecutar_sincronizacion_automatica()
+      st.session_state.next_run_time = datetime.now() + timedelta(
+          seconds=st.session_state.total_seconds_interval
+      )
+
+  st.markdown("#### 🖥️ Consola de Registros del Sistema")
+  logs_html = "<br>".join(st.session_state.logs)
+  st.markdown(
+      f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
+  )
+
+  if st.session_state.is_running:
+    st.info(
+        "🟢 El temporizador está activo en segundo plano. La consola se"
+        " actualiza sin bloquear la página."
+    )
+  else:
+    st.markdown(
+        "<p style='color: #94a3b8; font-size: 13px; font-style: italic;'>El"
+        " temporizador se encuentra detenido. Define el tiempo y haz clic en"
+        " INICIAR.</p>",
+        unsafe_allow_html=True,
+    )
+
+
+renderizar_consola_y_background()
 
 st.markdown("---")
 
@@ -512,7 +491,7 @@ with tab1:
     st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
     # ==========================================
-    # SECCIÓN ACTUALIZADA: LIMPIEZA MASIVA DE CAMPOS (SIN BORRAR FILAS)
+    # LIMPIEZA MASIVA DE CAMPOS (SIN BORRAR FILAS)
     # ==========================================
     with st.container(border=True):
       st.markdown(
