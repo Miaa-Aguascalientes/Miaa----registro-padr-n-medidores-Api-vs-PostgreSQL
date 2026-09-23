@@ -41,11 +41,37 @@ st.markdown("""
             font-weight: bold;
             color: #f8fafc;
         }
+        .terminal-box {
+            background-color: #0b0f19;
+            border: 1px solid #22c55e;
+            color: #22c55e;
+            font-family: 'Courier New', Courier, monospace;
+            padding: 15px;
+            border-radius: 6px;
+            height: 220px;
+            overflow-y: scroll;
+            font-size: 13px;
+            line-height: 1.4;
+        }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. CONEXIONES Y CONSULTAS OPTIMIZADAS (SQL)
+# 2. GESTIÓN DE LOGS (CONSOLA)
+# ==========================================
+if 'logs' not in st.session_state:
+    st.session_state.logs = [
+        f"[{datetime.now().strftime('%H:%M:%S')}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
+    ]
+
+def agregar_log(mensaje):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
+    if len(st.session_state.logs) > 100:
+        st.session_state.logs.pop()
+
+# ==========================================
+# 3. CONEXIONES Y CONSULTAS OPTIMIZADAS (SQL)
 # ==========================================
 url_login = "https://prelec.miaa.mx/auth/v2/login"
 url_instalaciones = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones"
@@ -72,7 +98,6 @@ def cargar_pagina_usuarios_db(limit=50, offset=0):
         query = text('SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor" LIMIT :lim OFFSET :off')
         return pd.read_sql(query, con=engine_pg, params={"lim": limit, "off": offset})
     except Exception as e:
-        st.error(f"Error al conectar con PostgreSQL: {e}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
@@ -105,11 +130,10 @@ def cargar_datos_api():
                     return df
         return pd.DataFrame()
     except Exception as e:
-        st.sidebar.error(f"Error al conectar con la API: {e}")
         return pd.DataFrame()
 
 # ==========================================
-# 3. FUNCIÓN DE MAPEO Y CRUCE DE DATOS
+# 4. FUNCIÓN DE MAPEO Y CRUCE DE DATOS
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     df_api_merge = df_filtrado.copy()
@@ -161,26 +185,38 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     return df_conmedidor_pg
 
 def ejecutar_sincronizacion_automatica():
+    agregar_log("Iniciando sincronización: Consultando datos desde la API...")
     df_filtrado = cargar_datos_api()
+    if df_filtrado.empty:
+        agregar_log("❌ Error: No se pudieron obtener datos desde la API.")
+        return False
+
+    agregar_log("Conectando a PostgreSQL y cargando registros...")
     try:
         engine_pg = obtener_motor_postgres()
         df_conmedidor_pg = pd.read_sql('SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg)
-    except Exception:
-        df_conmedidor_pg = pd.DataFrame()
+    except Exception as ex:
+        agregar_log(f"❌ Error al conectar a PostgreSQL: {ex}")
+        return False
 
-    if not df_conmedidor_pg.empty and not df_filtrado.empty:
+    if not df_conmedidor_pg.empty:
+        total_predios = len(df_conmedidor_pg)
+        agregar_log(f"Procesando cruce de datos para {total_predios:,} predios...")
         df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
         try:
-            engine_pg = obtener_motor_postgres()
+            agregar_log("Sincronizando y guardando cambios en PostgreSQL...")
             df_actualizado.to_sql("usuarios_miaa_conmedidor", con=engine_pg, schema="Usuarios", if_exists="replace", index=False)
+            agregar_log(f"✅ ACTUALIZACIÓN EXITOSA: Se actualizaron {total_predios:,} predios correctamente.")
             return True
         except Exception as ex:
-            st.error(f"Error al actualizar en PostgreSQL: {ex}")
+            agregar_log(f"❌ Error al guardar en PostgreSQL: {ex}")
             return False
-    return False
+    else:
+        agregar_log("⚠️ Advertencia: La tabla en PostgreSQL está vacía.")
+        return False
 
 # ==========================================
-# 4. GESTIÓN DE ESTADO PARA EL TEMPORIZADOR
+# 5. GESTIÓN DE ESTADO PARA EL TEMPORIZADOR
 # ==========================================
 if 'is_running' not in st.session_state:
     st.session_state.is_running = False
@@ -190,7 +226,7 @@ if 'total_seconds_interval' not in st.session_state:
     st.session_state.total_seconds_interval = 300
 
 # ==========================================
-# 5. TÍTULO Y PANEL DE CONFIGURACIÓN DE TIEMPO
+# 6. TÍTULO Y PANEL DE CONFIGURACIÓN DE TIEMPO
 # ==========================================
 st.markdown("<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True)
 st.markdown("---")
@@ -220,12 +256,14 @@ if btn_iniciar:
     st.session_state.is_running = True
     st.session_state.total_seconds_interval = total_segundos
     st.session_state.next_run_time = datetime.now() + timedelta(seconds=total_segundos)
+    agregar_log(f"Temporizador iniciado. Próxima ejecución en {intervalo_sel.lower()}.")
     st.success("¡Temporizador iniciado correctamente!")
     st.rerun()
 
 if btn_parar:
     st.session_state.is_running = False
     st.session_state.next_run_time = None
+    agregar_log("Temporizador detenido manualmente por el usuario.")
     st.warning("Temporizador detenido.")
     st.rerun()
 
@@ -234,9 +272,7 @@ placeholder_timer = st.empty()
 if st.session_state.is_running and st.session_state.next_run_time:
     ahora = datetime.now()
     if ahora >= st.session_state.next_run_time:
-        exito = ejecutar_sincronizacion_automatica()
-        if exito:
-            st.toast("¡Datos sincronizados y guardados en PostgreSQL con éxito!", icon="🚰")
+        ejecutar_sincronizacion_automatica()
         st.session_state.next_run_time = datetime.now() + timedelta(seconds=st.session_state.total_seconds_interval)
         st.rerun()
     else:
@@ -260,7 +296,16 @@ else:
 st.markdown("---")
 
 # ==========================================
-# 6. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
+# 7. CONSOLA DE REGISTROS (LOGS)
+# ==========================================
+st.markdown("#### 🖥️ Consola de Registros del Sistema")
+logs_html = "<br>".join(st.session_state.logs)
+st.markdown(f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True)
+
+st.markdown("---")
+
+# ==========================================
+# 8. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
 # ==========================================
 tab1, tab2 = st.tabs([
     "🚰 Panel Principal y Gestión", 
