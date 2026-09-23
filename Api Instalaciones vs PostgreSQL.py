@@ -81,11 +81,9 @@ def cargar_datos_api():
                 res_inst = requests.get(url_instalaciones, headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
                 if res_inst.status_code == 200:
                     data = res_inst.json()
-                    # Validar si el resultado viene en lista o dentro de un diccionario
                     if isinstance(data, list):
                         return pd.DataFrame(data)
                     elif isinstance(data, dict):
-                        # Ajusta la llave según la estructura de retorno de tu API (ej. 'data', 'result', etc.)
                         for key in ['data', 'result', 'items', 'instalaciones']:
                             if key in data and isinstance(data[key], list):
                                 return pd.DataFrame(data[key])
@@ -109,13 +107,18 @@ st.sidebar.metric("Registros API Cargados", len(df_filtrado))
 st.sidebar.metric("Registros PostgreSQL (Limit 10)", len(df_conmedidor_pg))
 
 # ==========================================
-# 4. PROCESAMIENTO Y CRUCE DE DATOS (_CAMPOS)
+# 4. PROCESAMIENTO Y CRUCE DE DATOS POR PREDIO
 # ==========================================
 if not df_conmedidor_pg.empty and not df_filtrado.empty:
     df_api_merge = df_filtrado.copy()
     
-    df_api_merge['key_join'] = df_api_merge.get('cliente', df_api_merge.get('numeroCliente', '')).astype(str).str.strip()
-    
+    # Extraer el campo predio de la API (buscando 'predio', 'predioViv' o similares y limpiando espacios)
+    col_api_predio = next((c for c in ['predio', 'predioViv', 'predio_viv', 'numeroPredio'] if c in df_api_merge.columns), None)
+    if col_api_predio:
+        df_api_merge['key_join'] = df_api_merge[col_api_predio].astype(str).str.strip().str.split('-').str[0]
+    else:
+        df_api_merge['key_join'] = ''
+
     dict_api_serie = dict(zip(df_api_merge['key_join'], df_api_merge.get('serieMedidor', df_api_merge.get('serie', ''))))
     dict_api_colonia = dict(zip(df_api_merge['key_join'], df_api_merge.get('colonia', '')))
     dict_api_domicilio = dict(zip(df_api_merge['key_join'], df_api_merge.get('domicilio', '')))
@@ -125,7 +128,12 @@ if not df_conmedidor_pg.empty and not df_filtrado.empty:
     dict_api_f_reg = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaRegistro', '')))
     dict_api_f_inst = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaInstalacion', '')))
 
-    df_conmedidor_pg['key_join'] = df_conmedidor_pg.get('Cliente', '').astype(str).str.strip()
+    # Procesar 'Predio_Viv' en PostgreSQL ignorando el guion medio y lo posterior
+    col_pg_predio = next((c for c in ['Predio_Viv', 'predio_viv', 'Predio', 'predio'] if c in df_conmedidor_pg.columns), None)
+    if col_pg_predio:
+        df_conmedidor_pg['key_join'] = df_conmedidor_pg[col_pg_predio].astype(str).str.strip().str.split('-').str[0]
+    else:
+        df_conmedidor_pg['key_join'] = ''
     
     df_conmedidor_pg['_Serie'] = df_conmedidor_pg['key_join'].map(dict_api_serie).fillna(df_conmedidor_pg.get('_Serie', ''))
     df_conmedidor_pg['_Colonia'] = df_conmedidor_pg['key_join'].map(dict_api_colonia).fillna(df_conmedidor_pg.get('_Colonia', ''))
@@ -151,7 +159,7 @@ tab1, tab2 = st.tabs([
 
 with tab1:
     st.markdown("<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>Gestión de Tabla PostgreSQL: usuarios_miaa_conmedidor</p>", unsafe_allow_html=True)
-    st.markdown("<p style='font-size:13px; color: #94a3b8; margin-bottom:15px;'>Visualización y completado automático de columnas de control interno (con guion bajo) sincronizadas desde la API de instalaciones.</p>", unsafe_allow_html=True)
+    st.markdown("<p style='font-size:13px; color: #94a3b8; margin-bottom:15px;'>Visualización y completado automático de columnas de control interno (con guion bajo) sincronizadas desde la API de instalaciones mediante el campo Predio.</p>", unsafe_allow_html=True)
 
     if not df_conmedidor_pg.empty:
         c_m1, c_m2, c_m3 = st.columns(3)
