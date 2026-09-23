@@ -133,17 +133,22 @@ def cargar_datos_api():
         return pd.DataFrame()
 
 # ==========================================
-# 4. FUNCIÓN DE MAPEO Y CRUCE DE DATOS
+# 4. FUNCIÓN DE MAPEO Y CRUCE DE DATOS (PREDIO + UNIDAD)
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     df_api_merge = df_filtrado.copy()
     
-    col_api_predio = next((c for c in ['predio', 'predioViv', 'predio_viv', 'numeroPredio'] if c in df_api_merge.columns), None)
-    if col_api_predio:
-        df_api_merge['key_join'] = df_api_merge[col_api_predio].astype(str).str.strip()
+    # Estandarizar 'predio' y 'unidad' de la API para formar la llave compuesta (ej. PREDIO_UNIDAD)
+    if 'predio' in df_api_merge.columns and 'unidad' in df_api_merge.columns:
+        p_api = df_api_merge['predio'].astype(str).str.strip().str.upper()
+        u_api = df_api_merge['unidad'].astype(str).str.strip().str.upper()
+        df_api_merge['key_join'] = p_api + "_" + u_api
+    elif 'predio' in df_api_merge.columns:
+        df_api_merge['key_join'] = df_api_merge['predio'].astype(str).str.strip().str.upper() + "_0"
     else:
         df_api_merge['key_join'] = ''
 
+    # Crear diccionarios de mapeo rápido con los datos de la API
     dict_api_serie = dict(zip(df_api_merge['key_join'], df_api_merge.get('serie', '')))
     dict_api_colonia = dict(zip(df_api_merge['key_join'], df_api_merge.get('colonia', '')))
     dict_api_domicilio = dict(zip(df_api_merge['key_join'], df_api_merge.get('domicilio', '')))
@@ -166,12 +171,19 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     dict_api_f_reg = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaRegistro', '')))
     dict_api_f_inst = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaInstalacion', '')))
 
-    col_pg_predio = next((c for c in ['Predio_Viv', 'predio_viv', 'Predio', 'predio'] if c in df_conmedidor_pg.columns), None)
-    if col_pg_predio:
-        df_conmedidor_pg['key_join'] = df_conmedidor_pg[col_pg_predio].astype(str).str.strip().str.split('-').str[0]
+    # Procesar 'Predio_Viv' de PostgreSQL separando la parte principal y la unidad después del guion (ej. '542437-0')
+    if 'Predio_Viv' in df_conmedidor_pg.columns:
+        s_split = df_conmedidor_pg['Predio_Viv'].astype(str).str.strip().str.upper().str.split('-', n=1, expand=True)
+        p_pg = s_split[0]
+        u_pg = s_split[1].fillna('0') if s_split.shape[1] > 1 else '0'
+        df_conmedidor_pg['key_join'] = p_pg + "_" + u_pg
     else:
         df_conmedidor_pg['key_join'] = ''
     
+    match_prueba = '542437_0' in df_conmedidor_pg['key_join'].values and '542437_0' in df_api_merge['key_join'].values
+    agregar_log(f"Depuración Predio '542437_0': ¿Encontrado en API y PG? -> {match_prueba}")
+
+    # Asignación de valores cruzados mediante la llave compuesta (Predio + Unidad)
     df_conmedidor_pg['_Serie'] = df_conmedidor_pg['key_join'].map(dict_api_serie).fillna(df_conmedidor_pg.get('_Serie', ''))
     df_conmedidor_pg['_Colonia'] = df_conmedidor_pg['key_join'].map(dict_api_colonia).fillna(df_conmedidor_pg.get('_Colonia', ''))
     df_conmedidor_pg['_Domicilio'] = df_conmedidor_pg['key_join'].map(dict_api_domicilio).fillna(df_conmedidor_pg.get('_Domicilio', ''))
@@ -201,7 +213,7 @@ def ejecutar_sincronizacion_automatica():
 
     if not df_conmedidor_pg.empty:
         total_predios = len(df_conmedidor_pg)
-        agregar_log(f"Procesando cruce de datos para {total_predios:,} predios...")
+        agregar_log(f"Procesando cruce de datos para {total_predios:,} predios (con Predio y Unidad)...")
         df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
         try:
             agregar_log("Sincronizando y guardando cambios en PostgreSQL...")
@@ -305,7 +317,71 @@ st.markdown(f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=Tr
 st.markdown("---")
 
 # ==========================================
-# 8. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
+# 8. ANÁLISIS Y COMPARATIVA DE COINCIDENCIAS (PG vs API)
+# ==========================================
+st.markdown("#### 🔍 Comparativa de Coincidencias: PostgreSQL vs API")
+
+df_filtrado_global = cargar_datos_api()
+try:
+    engine_pg_comp = obtener_motor_postgres()
+    df_pg_comp = pd.read_sql('SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg_comp)
+except Exception:
+    df_pg_comp = pd.DataFrame()
+
+if not df_pg_comp.empty and not df_filtrado_global.empty:
+    if 'Predio_Viv' in df_pg_comp.columns and 'predio' in df_filtrado_global.columns:
+        # Clave compuesta para comparación PG
+        s_split_c = df_pg_comp['Predio_Viv'].astype(str).str.strip().str.upper().str.split('-', n=1, expand=True)
+        p_pg_c = s_split_c[0]
+        u_pg_c = s_split_c[1].fillna('0') if s_split_c.shape[1] > 1 else '0'
+        set_pg = set(p_pg_c + "_" + u_pg_c)
+
+        # Clave compuesta para comparación API
+        p_api_c = df_filtrado_global['predio'].astype(str).str.strip().str.upper()
+        u_api_c = df_filtrado_global['unidad'].astype(str).str.strip().str.upper() if 'unidad' in df_filtrado_global.columns else '0'
+        set_api = set(p_api_c + "_" + u_api_c)
+        
+        coincidencias = set_pg.intersection(set_api)
+        solo_pg = set_pg - set_api
+        solo_api = set_api - set_pg
+        
+        col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+        with col_c1:
+            st.metric("Total Registros (PG)", f"{len(set_pg):,}")
+        with col_c2:
+            st.metric("Total Registros (API)", f"{len(set_api):,}")
+        with col_c3:
+            st.metric("Coincidentes", f"{len(coincidencias):,}")
+        with col_c4:
+            st.metric("Sin Coincidencia", f"{len(solo_pg) + len(solo_api):,}")
+            
+        with st.expander("Ver detalle de la comparativa en tabla"):
+            df_resumen_match = pd.DataFrame({
+                "Métrica": [
+                    "Total Registros en PostgreSQL",
+                    "Total Registros en API",
+                    "Predios con Unidad Coincidente Exacta",
+                    "Registros solo en PostgreSQL (Sin match en API)",
+                    "Registros solo en API (Sin match en PostgreSQL)"
+                ],
+                "Cantidad": [
+                    len(set_pg),
+                    len(set_api),
+                    len(coincidencias),
+                    len(solo_pg),
+                    len(solo_api)
+                ]
+            })
+            st.dataframe(df_resumen_match, use_container_width=True)
+    else:
+        st.warning("No se pudieron detectar las columnas necesarias para realizar el cruce compuesto.")
+else:
+    st.info("Cargando datos de PostgreSQL y la API para calcular las coincidencias...")
+
+st.markdown("---")
+
+# ==========================================
+# 9. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
 # ==========================================
 tab1, tab2 = st.tabs([
     "🚰 Panel Principal y Gestión", 
@@ -366,9 +442,8 @@ with tab1:
             offset_val = (pagina_actual - 1) * filas_por_pagina
             df_pagina_pg = cargar_pagina_usuarios_db(limit=filas_por_pagina, offset=offset_val)
             
-            df_filtrado = cargar_datos_api()
-            if not df_pagina_pg.empty and not df_filtrado.empty:
-                df_pagina_pg = procesar_cruce_datos(df_pagina_pg, df_filtrado)
+            if not df_pagina_pg.empty and not df_filtrado_global.empty:
+                df_pagina_pg = procesar_cruce_datos(df_pagina_pg, df_filtrado_global)
 
             st.dataframe(df_pagina_pg, use_container_width=True, height=400)
     else:
@@ -383,8 +458,8 @@ with tab2:
         
         t2_off = (t2_pag - 1) * t2_filas
         df_t2 = cargar_pagina_usuarios_db(limit=t2_filas, offset=t2_off)
-        if not df_t2.empty and not df_filtrado.empty:
-            df_t2 = procesar_cruce_datos(df_t2, df_filtrado)
+        if not df_t2.empty and not df_filtrado_global.empty:
+            df_t2 = procesar_cruce_datos(df_t2, df_filtrado_global)
             
         st.dataframe(df_t2, use_container_width=True, height=350)
     else:
@@ -393,7 +468,7 @@ with tab2:
     st.markdown("---")
     
     st.subheader("🌐 Tabla: Datos de la API de Instalación")
-    if not df_filtrado.empty:
-        st.dataframe(df_filtrado.head(100), use_container_width=True, height=350)
+    if not df_filtrado_global.empty:
+        st.dataframe(df_filtrado_global.head(100), use_container_width=True, height=350)
     else:
         st.warning("No hay datos cargados desde la API.")
