@@ -160,7 +160,7 @@ def cargar_datos_api():
             ]
             df = df.drop(columns=cols_a_remover, errors="ignore")
 
-            # CREACIÓN OFICIAL DEL CAMPO Predio_Viv INCLUYENDO UNIDADES EN 0
+            # CREACIÓN OFICIAL DEL CAMPO Predio_Viv (Incluyendo unidades en 0 o vacías)
             col_api_predio = next(
                 (
                     c
@@ -186,30 +186,37 @@ def cargar_datos_api():
             if col_api_predio:
 
               def construir_predio_viv(row):
-                p = (
-                    str(row[col_api_predio]).strip()
-                    if pd.notna(row[col_api_predio])
-                    else ""
-                )
-                if not p or p.lower() in ["none", "nan"]:
+                p = row[col_api_predio]
+                if pd.isna(p) or str(p).strip().lower() in ["none", "nan", ""]:
                   return ""
 
-                # Si existe unidad (incluso si es 0, "0", o numérica), la concatenamos con guion medio
-                if col_api_unidad and pd.notna(row[col_api_unidad]):
-                  u = str(row[col_api_unidad]).strip()
-                  if u.lower() not in ["none", "nan"]:
-                    return f"{p}-{u}"
+                p_str = str(p).strip()
+                u = (
+                    row[col_api_unidad]
+                    if col_api_unidad and pd.notna(row[col_api_unidad])
+                    else 0
+                )
+                u_str = str(u).strip()
 
-                # Por defecto si no hay unidad válida
-                return f"{p}-0"
+                if u_str.lower() in ["none", "nan", ""]:
+                  u_str = "0"
+
+                return f"{p_str}-{u_str}"
 
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-              # Mover la columna Predio_Viv a la primera posición (extremo izquierdo)
-              cols = ["Predio_Viv"] + [
-                  col for col in df.columns if col != "Predio_Viv"
-              ]
-              df = df[cols]
+              # Mover la columna Predio_Viv justo a la izquierda del campo predio
+              if "predio" in df.columns:
+                cols = list(df.columns)
+                cols.remove("Predio_Viv")
+                idx_predio = cols.index("predio")
+                cols.insert(idx_predio, "Predio_Viv")
+                df = df[cols]
+              else:
+                cols = ["Predio_Viv"] + [
+                    col for col in df.columns if col != "Predio_Viv"
+                ]
+                df = df[cols]
 
           return df
     return pd.DataFrame()
@@ -508,6 +515,7 @@ tab1, tab2 = st.tabs([
 ])
 
 total_registros_db = obtener_total_registros()
+df_filtrado = cargar_datos_api()
 
 with tab1:
   st.markdown(
@@ -660,7 +668,7 @@ with tab1:
         )
       with col_p2:
         st.markdown(
-            f"<p style='margin-top: 25px; color: #94a3b8;'>Página"
+            f"<p style='margin-top: 25px; color: #94a3b8;' >Página"
             f" {pagina_actual} de {total_paginas} (Mostrando bloques de 50"
             " registros)</p>",
             unsafe_allow_html=True,
@@ -671,7 +679,6 @@ with tab1:
           limit=filas_por_pagina, offset=offset_val
       )
 
-      df_filtrado = cargar_datos_api()
       if not df_pagina_pg.empty and not df_filtrado.empty:
         df_pagina_pg = procesar_cruce_datos(df_pagina_pg, df_filtrado)
 
@@ -705,8 +712,11 @@ with tab2:
 
   st.markdown("---")
 
-  st.subheader("🌐 Tabla: Datos de la API de Instalación")
+  st.subheader(
+      "🌐 Tabla: Datos de la API de Instalación (Todos los registros)"
+  )
   if not df_filtrado.empty:
-    st.dataframe(df_filtrado.head(100), use_container_width=True, height=350)
+    # Mostramos TODO el DataFrame sin .head() para que aparezcan todos los registros existentes
+    st.dataframe(df_filtrado, use_container_width=True, height=350)
   else:
     st.warning("No hay datos cargados desde la API.")
