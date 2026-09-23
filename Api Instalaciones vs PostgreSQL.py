@@ -160,7 +160,7 @@ def cargar_datos_api():
             ]
             df = df.drop(columns=cols_a_remover, errors="ignore")
 
-            # CREACIÓN OFICIAL DEL CAMPO Predio_Viv UNiendo predio y unidad
+            # CREACIÓN OFICIAL DEL CAMPO Predio_Viv INCLUYENDO UNIDADES EN 0
             col_api_predio = next(
                 (
                     c
@@ -193,21 +193,23 @@ def cargar_datos_api():
                 )
                 if not p or p.lower() in ["none", "nan"]:
                   return ""
-                u = (
-                    str(row[col_api_unidad]).strip()
-                    if col_api_unidad
-                    and pd.notna(row[col_api_unidad])
-                    and str(row[col_api_unidad]).lower()
-                    not in ["none", "nan", "0"]
-                    else ""
-                )
-                if u:
-                  return f"{p}-{u}"
-                return (
-                    p  # Si la unidad es 0, None o vacía, mantiene solo el predio
-                )
+
+                # Si existe unidad (incluso si es 0, "0", o numérica), la concatenamos con guion medio
+                if col_api_unidad and pd.notna(row[col_api_unidad]):
+                  u = str(row[col_api_unidad]).strip()
+                  if u.lower() not in ["none", "nan"]:
+                    return f"{p}-{u}"
+
+                # Por defecto si no hay unidad válida
+                return f"{p}-0"
 
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
+
+              # Mover la columna Predio_Viv a la primera posición (extremo izquierdo)
+              cols = ["Predio_Viv"] + [
+                  col for col in df.columns if col != "Predio_Viv"
+              ]
+              df = df[cols]
 
           return df
     return pd.DataFrame()
@@ -224,7 +226,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   if "Predio_Viv" not in df_api_merge.columns:
     return df_conmedidor_pg
 
-  # Llave de cruce limpia basada en la columna recién creada
   df_api_merge["key_join"] = (
       df_api_merge["Predio_Viv"].astype(str).str.strip()
   )
@@ -267,7 +268,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       zip(df_api_merge["key_join"], df_api_merge.get("fechaInstalacion", ""))
   )
 
-  # Identificar campo de predio en PostgreSQL
   col_pg_predio = next(
       (
           c
