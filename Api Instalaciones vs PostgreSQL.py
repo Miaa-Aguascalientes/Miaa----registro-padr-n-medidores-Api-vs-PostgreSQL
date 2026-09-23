@@ -46,8 +46,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. CONEXIONES Y CARGA DE DATOS
+# 2. CONEXIONES Y CARGA DE DATOS (API REAL Y PG)
 # ==========================================
+url_login = "https://prelec.miaa.mx/auth/v2/login"
+url_instalaciones = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones"
+
 def obtener_motor_postgres():
     """Construye y retorna el engine de SQLAlchemy usando los secretos estructurados."""
     pg = st.secrets["postgres"]
@@ -67,22 +70,46 @@ def cargar_usuarios_conmedidor_db():
 
 @st.cache_data(ttl=300)
 def cargar_datos_api():
-    """Realiza la petición a la API de instalaciones."""
+    """Conecta con la API externa de MIAA usando credenciales de st.secrets para obtener registros de instalaciones."""
     try:
-        response = requests.get("https://api.miaa.mx/instalaciones", timeout=15)
-        if response.status_code == 200:
-            return pd.DataFrame(response.json())
-    except Exception:
-        pass
-    
-    return pd.DataFrame()
+        usuario = st.secrets["api"]["usuario"]
+        password = st.secrets["api"]["password"]
+        res_login = requests.post(url_login, json={"username": usuario, "password": password}, headers={"Content-Type": "application/json"})
+        if res_login.status_code == 200:
+            token = res_login.json().get("token") or res_login.json().get("access_token")
+            if token:
+                res_inst = requests.get(url_instalaciones, headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+                if res_inst.status_code == 200:
+                    data = res_inst.json()
+                    # Validar si el resultado viene en lista o dentro de un diccionario
+                    if isinstance(data, list):
+                        return pd.DataFrame(data)
+                    elif isinstance(data, dict):
+                        # Ajusta la llave según la estructura de retorno de tu API (ej. 'data', 'result', etc.)
+                        for key in ['data', 'result', 'items', 'instalaciones']:
+                            if key in data and isinstance(data[key], list):
+                                return pd.DataFrame(data[key])
+                        return pd.DataFrame([data])
+        return pd.DataFrame()
+    except Exception as e:
+        st.sidebar.error(f"Error al conectar con la API: {e}")
+        return pd.DataFrame()
 
 # Carga inicial de fuentes
 df_filtrado = cargar_datos_api()
 df_conmedidor_pg = cargar_usuarios_conmedidor_db()
 
 # ==========================================
-# 3. PROCESAMIENTO Y CRUCE DE DATOS (_CAMPOS)
+# 3. BARRA LATERAL (SIDEBAR)
+# ==========================================
+st.sidebar.markdown("<h2>⚙️ Panel de Control</h2>", unsafe_allow_html=True)
+st.sidebar.markdown("---")
+st.sidebar.info("Panel lateral restaurado correctamente.")
+st.sidebar.metric("Registros API Cargados", len(df_filtrado))
+st.sidebar.metric("Registros PostgreSQL (Limit 10)", len(df_conmedidor_pg))
+
+# ==========================================
+# 4. PROCESAMIENTO Y CRUCE DE DATOS (_CAMPOS)
 # ==========================================
 if not df_conmedidor_pg.empty and not df_filtrado.empty:
     df_api_merge = df_filtrado.copy()
@@ -112,7 +139,7 @@ if not df_conmedidor_pg.empty and not df_filtrado.empty:
     df_conmedidor_pg = df_conmedidor_pg.drop(columns=['key_join'], errors='ignore')
 
 # ==========================================
-# 4. TÍTULO Y ESTRUCTURA DE PESTAÑAS (2 TABS)
+# 5. TÍTULO Y ESTRUCTURA DE PESTAÑAS (2 TABS)
 # ==========================================
 st.markdown("<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True)
 st.markdown("---")
@@ -190,4 +217,4 @@ with tab2:
     if not df_filtrado.empty:
         st.dataframe(df_filtrado, use_container_width=True, height=350)
     else:
-        st.warning("No hay datos cargados desde la API.")
+        st.warning("No hay datos cargados desde la API. Verifica que las credenciales en `st.secrets['api']` sean correctas y que el token de autenticación se genere con éxito.")
