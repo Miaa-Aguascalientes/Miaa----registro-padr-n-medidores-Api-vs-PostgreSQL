@@ -57,10 +57,11 @@ def obtener_motor_postgres():
 
 @st.cache_data(ttl=600)
 def cargar_usuarios_conmedidor_db():
-    """Consulta la base de datos PostgreSQL para obtener la tabla usuarios_miaa_conmedidor."""
+    """Consulta la base de datos PostgreSQL para obtener las primeras 10 filas de la tabla usuarios_miaa_conmedidor."""
     try:
         engine_pg = obtener_motor_postgres()
-        query = 'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"'
+        # Se añade LIMIT 10 para restringir la carga únicamente a los primeros 10 registros
+        query = 'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor" LIMIT 10'
         return pd.read_sql(query, con=engine_pg)
     except Exception as e:
         st.error(f"Error al conectar con PostgreSQL: {e}")
