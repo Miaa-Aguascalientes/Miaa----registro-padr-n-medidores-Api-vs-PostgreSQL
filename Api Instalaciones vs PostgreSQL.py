@@ -46,7 +46,7 @@ st.markdown(
             font-family: 'Courier New', Courier, monospace;
             padding: 15px;
             border-radius: 6px;
-            height: 220px;
+            height: 200px;
             overflow-y: scroll;
             font-size: 13px;
             line-height: 1.4;
@@ -166,11 +166,12 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. FUNCIÓN DE MAPEO Y CRUCE DE DATOS
+# 4. FUNCIÓN DE CRUCE ESTRICTO (PREDIO + UNIDAD)
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   df_api_merge = df_filtrado.copy()
 
+  # Identificar campos de predio y unidad en la API de forma estricta
   col_api_predio = next(
       (
           c
@@ -179,12 +180,24 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       ),
       None,
   )
-  if col_api_predio:
-    df_api_merge["key_join"] = (
-        df_api_merge[col_api_predio].astype(str).str.strip()
+  col_api_unidad = next(
+      (c for c in ["unidad", "unidadViv", "unidad_viv"] if c in df_api_merge.columns),
+      None,
+  )
+
+  # Construcción estricta de la llave compuesta de la API (Ej: "750648-21")
+  def construir_llave_api(row):
+    p = str(row[col_api_predio]).strip() if col_api_predio else ""
+    u = (
+        str(row[col_api_unidad]).strip()
+        if col_api_unidad and pd.notna(row[col_api_unidad])
+        else ""
     )
-  else:
-    df_api_merge["key_join"] = ""
+    if u and u != "None" and u != "nan" and u != "0":
+      return f"{p}-{u}"
+    return p  # Si no hay unidad válida, se queda solo con el predio
+
+  df_api_merge["key_join"] = df_api_merge.apply(construir_llave_api, axis=1)
 
   dict_api_serie = dict(zip(df_api_merge["key_join"], df_api_merge.get("serie", "")))
   dict_api_colonia = dict(
@@ -224,6 +237,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       zip(df_api_merge["key_join"], df_api_merge.get("fechaInstalacion", ""))
   )
 
+  # Identificar campo de predio/vivienda en PostgreSQL
   col_pg_predio = next(
       (
           c
@@ -232,13 +246,11 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       ),
       None,
   )
+
   if col_pg_predio:
+    # Llave exacta tal cual viene en PostgreSQL (Ej: "750648-26") sin eliminar la unidad del guion
     df_conmedidor_pg["key_join"] = (
-        df_conmedidor_pg[col_pg_predio]
-        .astype(str)
-        .str.strip()
-        .str.split("-")
-        .str[0]
+        df_conmedidor_pg[col_pg_predio].astype(str).str.strip()
     )
   else:
     df_conmedidor_pg["key_join"] = ""
@@ -283,30 +295,44 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
 
 
 def ejecutar_sincronizacion_automatica():
-  agregar_log("Iniciando sincronización: Consultando datos desde la API...")
+  agregar_log(
+      "🔄 Iniciando ciclo: Intentando conectar y autenticar con la API de MIAA..."
+  )
   df_filtrado = cargar_datos_api()
+
   if df_filtrado.empty:
-    agregar_log("❌ Error: No se pudieron obtener datos desde la API.")
+    agregar_log(
+        "❌ Error: No se pudo conectar de manera correcta a la API o no devolvió"
+        " datos."
+    )
     return False
 
-  agregar_log("Conectando a PostgreSQL y cargando registros...")
+  agregar_log(
+      "✅ Conexión a la API establecida de manera correcta. Registros"
+      f" obtenidos de la API: {len(df_filtrado):,}."
+  )
+  agregar_log(
+      "🔄 Se procede a la actualización de datos de PostgreSQL (cruce y"
+      " almacenamiento)..."
+  )
+
   try:
     engine_pg = obtener_motor_postgres()
     df_conmedidor_pg = pd.read_sql(
         'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg
     )
   except Exception as ex:
-    agregar_log(f"❌ Error al conectar a PostgreSQL: {ex}")
+    agregar_log(f"❌ Error al conectar a la base de datos PostgreSQL: {ex}")
     return False
 
   if not df_conmedidor_pg.empty:
     total_predios = len(df_conmedidor_pg)
     agregar_log(
-        f"Procesando cruce de datos para {total_predios:,} predios..."
+        f"Procesando cruce estricto de información para {total_predios:,}"
+        " predios en PostgreSQL..."
     )
     df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
     try:
-      agregar_log("Sincronizando y guardando cambios en PostgreSQL...")
       df_actualizado.to_sql(
           "usuarios_miaa_conmedidor",
           con=engine_pg,
@@ -315,12 +341,12 @@ def ejecutar_sincronizacion_automatica():
           index=False,
       )
       agregar_log(
-          f"✅ ACTUALIZACIÓN EXITOSA: Se actualizaron {total_predios:,} predios"
-          " correctamente."
+          f"✅ ¡Actualización completada con éxito! Se han actualizado"
+          f" {total_predios:,} datos/registros en la tabla de PostgreSQL."
       )
       return True
     except Exception as ex:
-      agregar_log(f"❌ Error al guardar en PostgreSQL: {ex}")
+      agregar_log(f"❌ Error al guardar los datos actualizados en PG: {ex}")
       return False
   else:
     agregar_log("⚠️ Advertencia: La tabla en PostgreSQL está vacía.")
@@ -393,11 +419,10 @@ st.markdown("---")
 
 
 # ==========================================
-# 7. FRAGMENTO AISLADO PARA CONSOLA Y EJECUCIÓN EN SEGUNDO PLANO
-# (Evita que toda la página se oscurezca o se bloquee)
+# 7. FRAGMENTO AISLADO CON BARRA DE PROGRESO, CONTADOR Y CONSOLA
 # ==========================================
-@st.fragment(run_every=5)
-def renderizar_consola_y_background():
+@st.fragment(run_every=1)
+def renderizar_progreso_y_consola():
   if st.session_state.is_running and st.session_state.next_run_time:
     ahora = datetime.now()
     if ahora >= st.session_state.next_run_time:
@@ -406,27 +431,42 @@ def renderizar_consola_y_background():
           seconds=st.session_state.total_seconds_interval
       )
 
+  if st.session_state.is_running and st.session_state.next_run_time:
+    ahora = datetime.now()
+    restante = (st.session_state.next_run_time - ahora).total_seconds()
+    restante = max(0, int(restante))
+
+    total_intervalo = st.session_state.total_seconds_interval
+    transcurrido = total_intervalo - restante
+    progreso = min(1.0, max(0.0, transcurrido / total_intervalo))
+
+    mins, secs = divmod(restante, 60)
+    tiempo_formateado = f"{mins:02d}:{secs:02d}"
+
+    st.markdown(
+        f"<p style='font-size: 13px; color: #38bdf8; font-weight: bold;"
+        f" margin-bottom: 4px;'>⏱️ Próxima actualización automática en:"
+        f" {tiempo_formateado}</p>",
+        unsafe_allow_html=True,
+    )
+    st.progress(progreso)
+  else:
+    st.markdown(
+        "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
+        " margin-bottom: 4px;'>⏸️ Temporizador inactivo. Haz clic en INICIAR"
+        " para activar el ciclo automático.</p>",
+        unsafe_allow_html=True,
+    )
+    st.progress(0.0)
+
   st.markdown("#### 🖥️ Consola de Registros del Sistema")
   logs_html = "<br>".join(st.session_state.logs)
   st.markdown(
       f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
   )
 
-  if st.session_state.is_running:
-    st.info(
-        "🟢 El temporizador está activo en segundo plano. La consola se"
-        " actualiza sin bloquear la página."
-    )
-  else:
-    st.markdown(
-        "<p style='color: #94a3b8; font-size: 13px; font-style: italic;'>El"
-        " temporizador se encuentra detenido. Define el tiempo y haz clic en"
-        " INICIAR.</p>",
-        unsafe_allow_html=True,
-    )
 
-
-renderizar_consola_y_background()
+renderizar_progreso_y_consola()
 
 st.markdown("---")
 
