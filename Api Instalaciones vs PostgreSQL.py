@@ -1,20 +1,19 @@
-import streamlit as st
+from datetime import datetime, timedelta
+import time
 import pandas as pd
 import requests
 from sqlalchemy import create_engine, text
-from datetime import datetime, timedelta
-import time
+import streamlit as st
 
 # ==========================================
 # 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS
 # ==========================================
 st.set_page_config(
-    page_title="Gestor de Registros MIAA",
-    page_icon="🚰",
-    layout="wide"
+    page_title="Gestor de Registros MIAA", page_icon="🚰", layout="wide"
 )
 
-st.markdown("""
+st.markdown(
+    """
     <style>
         .metric-card {
             background-color: #1e293b;
@@ -54,21 +53,25 @@ st.markdown("""
             line-height: 1.4;
         }
     </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # ==========================================
 # 2. GESTIÓN DE LOGS (CONSOLA)
 # ==========================================
-if 'logs' not in st.session_state:
-    st.session_state.logs = [
-        f"[{datetime.now().strftime('%H:%M:%S')}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
-    ]
+if "logs" not in st.session_state:
+  st.session_state.logs = [
+      f"[{datetime.now().strftime('%H:%M:%S')}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
+  ]
+
 
 def agregar_log(mensaje):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
-    if len(st.session_state.logs) > 100:
-        st.session_state.logs.pop()
+  timestamp = datetime.now().strftime("%H:%M:%S")
+  st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
+  if len(st.session_state.logs) > 100:
+    st.session_state.logs.pop()
+
 
 # ==========================================
 # 3. CONEXIONES Y CONSULTAS OPTIMIZADAS (SQL)
@@ -76,234 +79,364 @@ def agregar_log(mensaje):
 url_login = "https://prelec.miaa.mx/auth/v2/login"
 url_instalaciones = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones"
 
+
 def obtener_motor_postgres():
-    pg = st.secrets["postgres"]
-    connection_string = f"postgresql+psycopg2://{pg['user']}:{pg['password']}@{pg['host']}:{pg['port']}/{pg['database']}"
-    return create_engine(connection_string)
+  pg = st.secrets["postgres"]
+  connection_string = f"postgresql+psycopg2://{pg['user']}:{pg['password']}@{pg['host']}:{pg['port']}/{pg['database']}"
+  return create_engine(connection_string)
+
 
 @st.cache_data(ttl=600)
 def obtener_total_registros():
-    try:
-        engine_pg = obtener_motor_postgres()
-        with engine_pg.connect() as conn:
-            result = conn.execute(text('SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor"'))
-            return result.scalar()
-    except Exception:
-        return 0
+  try:
+    engine_pg = obtener_motor_postgres()
+    with engine_pg.connect() as conn:
+      result = conn.execute(
+          text('SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor"')
+      )
+      return result.scalar()
+  except Exception:
+    return 0
+
 
 @st.cache_data(ttl=60)
 def cargar_pagina_usuarios_db(limit=50, offset=0):
-    try:
-        engine_pg = obtener_motor_postgres()
-        query = text('SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor" LIMIT :lim OFFSET :off')
-        return pd.read_sql(query, con=engine_pg, params={"lim": limit, "off": offset})
-    except Exception as e:
-        return pd.DataFrame()
+  try:
+    engine_pg = obtener_motor_postgres()
+    query = text(
+        'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor" LIMIT :lim OFFSET'
+        " :off"
+    )
+    return pd.read_sql(
+        query, con=engine_pg, params={"lim": limit, "off": offset}
+    )
+  except Exception as e:
+    return pd.DataFrame()
+
 
 @st.cache_data(ttl=300)
 def cargar_datos_api():
-    try:
-        usuario = st.secrets["api"]["usuario"]
-        password = st.secrets["api"]["password"]
-        res_login = requests.post(url_login, json={"username": usuario, "password": password}, headers={"Content-Type": "application/json"})
-        if res_login.status_code == 200:
-            token = res_login.json().get("token") or res_login.json().get("access_token")
-            if token:
-                res_inst = requests.get(url_instalaciones, headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
-                if res_inst.status_code == 200:
-                    data = res_inst.json()
-                    if isinstance(data, list):
-                        df = pd.DataFrame(data)
-                    elif isinstance(data, dict):
-                        df = pd.DataFrame()
-                        for key in ['data', 'result', 'items', 'instalaciones']:
-                            if key in data and isinstance(data[key], list):
-                                df = pd.DataFrame(data[key])
-                                break
-                        if df.empty:
-                            df = pd.DataFrame([data])
-                    
-                    if not df.empty:
-                        cols_a_remover = [c for c in df.columns if any(term in c.lower() for term in ['foto', 'imagen', 'img', 'fotografia'])]
-                        df = df.drop(columns=cols_a_remover, errors='ignore')
-                    
-                    return df
-        return pd.DataFrame()
-    except Exception as e:
-        return pd.DataFrame()
+  try:
+    usuario = st.secrets["api"]["usuario"]
+    password = st.secrets["api"]["password"]
+    res_login = requests.post(
+        url_login,
+        json={"username": usuario, "password": password},
+        headers={"Content-Type": "application/json"},
+    )
+    if res_login.status_code == 200:
+      token = res_login.json().get("token") or res_login.json().get(
+          "access_token"
+      )
+      if token:
+        res_inst = requests.get(
+            url_instalaciones,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        if res_inst.status_code == 200:
+          data = res_inst.json()
+          if isinstance(data, list):
+            df = pd.DataFrame(data)
+          elif isinstance(data, dict):
+            df = pd.DataFrame()
+            for key in ["data", "result", "items", "instalaciones"]:
+              if key in data and isinstance(data[key], list):
+                df = pd.DataFrame(data[key])
+                break
+            if df.empty:
+              df = pd.DataFrame([data])
+
+          if not df.empty:
+            cols_a_remover = [
+                c
+                for c in df.columns
+                if any(
+                    term in c.lower()
+                    for term in ["foto", "imagen", "img", "fotografia"]
+                )
+            ]
+            df = df.drop(columns=cols_a_remover, errors="ignore")
+
+          return df
+    return pd.DataFrame()
+  except Exception as e:
+    return pd.DataFrame()
+
 
 # ==========================================
-# 4. FUNCIÓN DE MAPEO Y CRUCE DE DATOS (PREDIO + UNIDAD)
+# 4. FUNCIÓN DE MAPEO Y CRUCE DE DATOS
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
-    df_api_merge = df_filtrado.copy()
-    
-    # Estandarizar 'predio' y 'unidad' de la API para formar la llave compuesta (ej. PREDIO_UNIDAD)
-    if 'predio' in df_api_merge.columns and 'unidad' in df_api_merge.columns:
-        p_api = df_api_merge['predio'].astype(str).str.strip().str.upper()
-        u_api = df_api_merge['unidad'].astype(str).str.strip().str.upper()
-        df_api_merge['key_join'] = p_api + "_" + u_api
-    elif 'predio' in df_api_merge.columns:
-        df_api_merge['key_join'] = df_api_merge['predio'].astype(str).str.strip().str.upper() + "_0"
-    else:
-        df_api_merge['key_join'] = ''
+  df_api_merge = df_filtrado.copy()
 
-    # Crear diccionarios de mapeo rápido con los datos de la API
-    dict_api_serie = dict(zip(df_api_merge['key_join'], df_api_merge.get('serie', '')))
-    dict_api_colonia = dict(zip(df_api_merge['key_join'], df_api_merge.get('colonia', '')))
-    dict_api_domicilio = dict(zip(df_api_merge['key_join'], df_api_merge.get('domicilio', '')))
-    dict_api_instalador = dict(zip(df_api_merge['key_join'], df_api_merge.get('usuarioNombre', '')))
-    
-    def mapear_tipo_externo(val):
-        if val in [True, 1, '1', 'true', 'True', 'YES', 'yes', 'S', 's']:
-            return 'Externo'
-        elif val in [False, 0, '0', 'false', 'False', 'NO', 'no', 'N', 'n']:
-            return 'MIAA'
-        return 'MIAA'
+  col_api_predio = next(
+      (
+          c
+          for c in ["predio", "predioViv", "predio_viv", "numeroPredio"]
+          if c in df_api_merge.columns
+      ),
+      None,
+  )
+  if col_api_predio:
+    df_api_merge["key_join"] = (
+        df_api_merge[col_api_predio].astype(str).str.strip()
+    )
+  else:
+    df_api_merge["key_join"] = ""
 
-    if 'usuarioExterno' in df_api_merge.columns:
-        df_api_merge['tipo_calculado'] = df_api_merge['usuarioExterno'].apply(mapear_tipo_externo)
-        dict_api_tipo_inst = dict(zip(df_api_merge['key_join'], df_api_merge['tipo_calculado']))
-    else:
-        dict_api_tipo_inst = {}
+  dict_api_serie = dict(zip(df_api_merge["key_join"], df_api_merge.get("serie", "")))
+  dict_api_colonia = dict(
+      zip(df_api_merge["key_join"], df_api_merge.get("colonia", ""))
+  )
+  dict_api_domicilio = dict(
+      zip(df_api_merge["key_join"], df_api_merge.get("domicilio", ""))
+  )
+  dict_api_instalador = dict(
+      zip(df_api_merge["key_join"], df_api_merge.get("usuarioNombre", ""))
+  )
 
-    dict_api_lectura = dict(zip(df_api_merge['key_join'], df_api_merge.get('lecturaActual', 0)))
-    dict_api_f_reg = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaRegistro', '')))
-    dict_api_f_inst = dict(zip(df_api_merge['key_join'], df_api_merge.get('fechaInstalacion', '')))
+  def mapear_tipo_externo(val):
+    if val in [True, 1, "1", "true", "True", "YES", "yes", "S", "s"]:
+      return "Externo"
+    elif val in [False, 0, "0", "false", "False", "NO", "no", "N", "n"]:
+      return "MIAA"
+    return "MIAA"
 
-    # Procesar 'Predio_Viv' de PostgreSQL separando la parte principal y la unidad después del guion (ej. '542437-0')
-    if 'Predio_Viv' in df_conmedidor_pg.columns:
-        s_split = df_conmedidor_pg['Predio_Viv'].astype(str).str.strip().str.upper().str.split('-', n=1, expand=True)
-        p_pg = s_split[0]
-        u_pg = s_split[1].fillna('0') if s_split.shape[1] > 1 else '0'
-        df_conmedidor_pg['key_join'] = p_pg + "_" + u_pg
-    else:
-        df_conmedidor_pg['key_join'] = ''
-    
-    match_prueba = '542437_0' in df_conmedidor_pg['key_join'].values and '542437_0' in df_api_merge['key_join'].values
-    agregar_log(f"Depuración Predio '542437_0': ¿Encontrado en API y PG? -> {match_prueba}")
+  if "usuarioExterno" in df_api_merge.columns:
+    df_api_merge["tipo_calculado"] = df_api_merge["usuarioExterno"].apply(
+        mapear_tipo_externo
+    )
+    dict_api_tipo_inst = dict(
+        zip(df_api_merge["key_join"], df_api_merge["tipo_calculado"])
+    )
+  else:
+    dict_api_tipo_inst = {}
 
-    # Asignación de valores cruzados mediante la llave compuesta (Predio + Unidad)
-    df_conmedidor_pg['_Serie'] = df_conmedidor_pg['key_join'].map(dict_api_serie).fillna(df_conmedidor_pg.get('_Serie', ''))
-    df_conmedidor_pg['_Colonia'] = df_conmedidor_pg['key_join'].map(dict_api_colonia).fillna(df_conmedidor_pg.get('_Colonia', ''))
-    df_conmedidor_pg['_Domicilio'] = df_conmedidor_pg['key_join'].map(dict_api_domicilio).fillna(df_conmedidor_pg.get('_Domicilio', ''))
-    df_conmedidor_pg['_Instalador'] = df_conmedidor_pg['key_join'].map(dict_api_instalador).fillna(df_conmedidor_pg.get('_Instalador', ''))
-    df_conmedidor_pg['_Tipo_instalador'] = df_conmedidor_pg['key_join'].map(dict_api_tipo_inst).fillna(df_conmedidor_pg.get('_Tipo_instalador', 'MIAA'))
-    df_conmedidor_pg['_Lectura_actual'] = pd.to_numeric(df_conmedidor_pg['key_join'].map(dict_api_lectura), errors='coerce').fillna(df_conmedidor_pg.get('_Lectura_actual', 0))
-    df_conmedidor_pg['_Fecha_registro'] = pd.to_datetime(df_conmedidor_pg['key_join'].map(dict_api_f_reg), errors='coerce').fillna(df_conmedidor_pg.get('_Fecha_registro', pd.NaT))
-    df_conmedidor_pg['_Fecha_instalacion'] = pd.to_datetime(df_conmedidor_pg['key_join'].map(dict_api_f_inst), errors='coerce').fillna(df_conmedidor_pg.get('_Fecha_instalacion', pd.NaT))
-    
-    df_conmedidor_pg = df_conmedidor_pg.drop(columns=['key_join'], errors='ignore')
-    return df_conmedidor_pg
+  dict_api_lectura = dict(
+      zip(df_api_merge["key_join"], df_api_merge.get("lecturaActual", 0))
+  )
+  dict_api_f_reg = dict(
+      zip(df_api_merge["key_join"], df_api_merge.get("fechaRegistro", ""))
+  )
+  dict_api_f_inst = dict(
+      zip(df_api_merge["key_join"], df_api_merge.get("fechaInstalacion", ""))
+  )
+
+  col_pg_predio = next(
+      (
+          c
+          for c in ["Predio_Viv", "predio_viv", "Predio", "predio"]
+          if c in df_conmedidor_pg.columns
+      ),
+      None,
+  )
+  if col_pg_predio:
+    df_conmedidor_pg["key_join"] = (
+        df_conmedidor_pg[col_pg_predio]
+        .astype(str)
+        .str.strip()
+        .str.split("-")
+        .str[0]
+    )
+  else:
+    df_conmedidor_pg["key_join"] = ""
+
+  df_conmedidor_pg["_Serie"] = (
+      df_conmedidor_pg["key_join"]
+      .map(dict_api_serie)
+      .fillna(df_conmedidor_pg.get("_Serie", ""))
+  )
+  df_conmedidor_pg["_Colonia"] = (
+      df_conmedidor_pg["key_join"]
+      .map(dict_api_colonia)
+      .fillna(df_conmedidor_pg.get("_Colonia", ""))
+  )
+  df_conmedidor_pg["_Domicilio"] = (
+      df_conmedidor_pg["key_join"]
+      .map(dict_api_domicilio)
+      .fillna(df_conmedidor_pg.get("_Domicilio", ""))
+  )
+  df_conmedidor_pg["_Instalador"] = (
+      df_conmedidor_pg["key_join"]
+      .map(dict_api_instalador)
+      .fillna(df_conmedidor_pg.get("_Instalador", ""))
+  )
+  df_conmedidor_pg["_Tipo_instalador"] = (
+      df_conmedidor_pg["key_join"]
+      .map(dict_api_tipo_inst)
+      .fillna(df_conmedidor_pg.get("_Tipo_instalador", "MIAA"))
+  )
+  df_conmedidor_pg["_Lectura_actual"] = pd.to_numeric(
+      df_conmedidor_pg["key_join"].map(dict_api_lectura), errors="coerce"
+  ).fillna(df_conmedidor_pg.get("_Lectura_actual", 0))
+  df_conmedidor_pg["_Fecha_registro"] = pd.to_datetime(
+      df_conmedidor_pg["key_join"].map(dict_api_f_reg), errors="coerce"
+  ).fillna(df_conmedidor_pg.get("_Fecha_registro", pd.NaT))
+  df_conmedidor_pg["_Fecha_instalacion"] = pd.to_datetime(
+      df_conmedidor_pg["key_join"].map(dict_api_f_inst), errors="coerce"
+  ).fillna(df_conmedidor_pg.get("_Fecha_instalacion", pd.NaT))
+
+  df_conmedidor_pg = df_conmedidor_pg.drop(columns=["key_join"], errors="ignore")
+  return df_conmedidor_pg
+
 
 def ejecutar_sincronizacion_automatica():
-    agregar_log("Iniciando sincronización: Consultando datos desde la API...")
-    df_filtrado = cargar_datos_api()
-    if df_filtrado.empty:
-        agregar_log("❌ Error: No se pudieron obtener datos desde la API.")
-        return False
+  agregar_log("Iniciando sincronización: Consultando datos desde la API...")
+  df_filtrado = cargar_datos_api()
+  if df_filtrado.empty:
+    agregar_log("❌ Error: No se pudieron obtener datos desde la API.")
+    return False
 
-    agregar_log("Conectando a PostgreSQL y cargando registros...")
+  agregar_log("Conectando a PostgreSQL y cargando registros...")
+  try:
+    engine_pg = obtener_motor_postgres()
+    df_conmedidor_pg = pd.read_sql(
+        'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg
+    )
+  except Exception as ex:
+    agregar_log(f"❌ Error al conectar a PostgreSQL: {ex}")
+    return False
+
+  if not df_conmedidor_pg.empty:
+    total_predios = len(df_conmedidor_pg)
+    agregar_log(
+        f"Procesando cruce de datos para {total_predios:,} predios..."
+    )
+    df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
     try:
-        engine_pg = obtener_motor_postgres()
-        df_conmedidor_pg = pd.read_sql('SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg)
+      agregar_log("Sincronizando y guardando cambios en PostgreSQL...")
+      df_actualizado.to_sql(
+          "usuarios_miaa_conmedidor",
+          con=engine_pg,
+          schema="Usuarios",
+          if_exists="replace",
+          index=False,
+      )
+      agregar_log(
+          f"✅ ACTUALIZACIÓN EXITOSA: Se actualizaron {total_predios:,} predios"
+          " correctamente."
+      )
+      return True
     except Exception as ex:
-        agregar_log(f"❌ Error al conectar a PostgreSQL: {ex}")
-        return False
+      agregar_log(f"❌ Error al guardar en PostgreSQL: {ex}")
+      return False
+  else:
+    agregar_log("⚠️ Advertencia: La tabla en PostgreSQL está vacía.")
+    return False
 
-    if not df_conmedidor_pg.empty:
-        total_predios = len(df_conmedidor_pg)
-        agregar_log(f"Procesando cruce de datos para {total_predios:,} predios (con Predio y Unidad)...")
-        df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
-        try:
-            agregar_log("Sincronizando y guardando cambios en PostgreSQL...")
-            df_actualizado.to_sql("usuarios_miaa_conmedidor", con=engine_pg, schema="Usuarios", if_exists="replace", index=False)
-            agregar_log(f"✅ ACTUALIZACIÓN EXITOSA: Se actualizaron {total_predios:,} predios correctamente.")
-            return True
-        except Exception as ex:
-            agregar_log(f"❌ Error al guardar en PostgreSQL: {ex}")
-            return False
-    else:
-        agregar_log("⚠️ Advertencia: La tabla en PostgreSQL está vacía.")
-        return False
 
 # ==========================================
 # 5. GESTIÓN DE ESTADO PARA EL TEMPORIZADOR
 # ==========================================
-if 'is_running' not in st.session_state:
-    st.session_state.is_running = False
-if 'next_run_time' not in st.session_state:
-    st.session_state.next_run_time = None
-if 'total_seconds_interval' not in st.session_state:
-    st.session_state.total_seconds_interval = 300
+if "is_running" not in st.session_state:
+  st.session_state.is_running = False
+if "next_run_time" not in st.session_state:
+  st.session_state.next_run_time = None
+if "total_seconds_interval" not in st.session_state:
+  st.session_state.total_seconds_interval = 300
 
 # ==========================================
 # 6. TÍTULO Y PANEL DE CONFIGURACIÓN DE TIEMPO
 # ==========================================
-st.markdown("<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True)
+st.markdown(
+    "<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True
+)
 st.markdown("---")
 
 st.markdown("#### Configuración")
 
 with st.container(border=True):
-    c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
-    with c1:
-        modo = st.selectbox("Modo", ["Periódico"], label_visibility="collapsed")
-    with c2:
-        opciones_intervalo = {
-            "Cada 1 minuto": 60,
-            "Cada 5 minutos": 300,
-            "Cada 15 minutos": 900,
-            "Cada 30 minutos": 1800,
-            "Cada hora": 3600
-        }
-        intervalo_sel = st.selectbox("Intervalo", list(opciones_intervalo.keys()), label_visibility="collapsed")
-        total_segundos = opciones_intervalo[intervalo_sel]
-    with c3:
-        btn_iniciar = st.button("INICIAR", type="primary", use_container_width=True)
-    with c4:
-        btn_parar = st.button("PARAR", type="secondary", use_container_width=True)
+  c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+  with c1:
+    modo = st.selectbox(
+        "Modo", ["Periódico"], label_visibility="collapsed"
+    )
+  with c2:
+    opciones_intervalo = {
+        "Cada 1 minuto": 60,
+        "Cada 5 minutos": 300,
+        "Cada 15 minutos": 900,
+        "Cada 30 minutos": 1800,
+        "Cada hora": 3600,
+    }
+    intervalo_sel = st.selectbox(
+        "Intervalo", list(opciones_intervalo.keys()), label_visibility="collapsed"
+    )
+    total_segundos = opciones_intervalo[intervalo_sel]
+  with c3:
+    btn_iniciar = st.button("INICIAR", type="primary", use_container_width=True)
+  with c4:
+    btn_parar = st.button("PARAR", type="secondary", use_container_width=True)
 
 if btn_iniciar:
-    st.session_state.is_running = True
-    st.session_state.total_seconds_interval = total_segundos
-    st.session_state.next_run_time = datetime.now() + timedelta(seconds=total_segundos)
-    agregar_log(f"Temporizador iniciado. Próxima ejecución en {intervalo_sel.lower()}.")
-    st.success("¡Temporizador iniciado correctamente!")
-    st.rerun()
+  st.session_state.is_running = True
+  st.session_state.total_seconds_interval = total_segundos
+  st.session_state.next_run_time = datetime.now() + timedelta(
+      seconds=total_segundos
+  )
+  agregar_log(
+      f"Temporizador iniciado. Próxima ejecución en {intervalo_sel.lower()}."
+  )
+  st.success("¡Temporizador iniciado correctamente!")
+  st.rerun()
 
 if btn_parar:
-    st.session_state.is_running = False
-    st.session_state.next_run_time = None
-    agregar_log("Temporizador detenido manualmente por el usuario.")
-    st.warning("Temporizador detenido.")
-    st.rerun()
+  st.session_state.is_running = False
+  st.session_state.next_run_time = None
+  agregar_log("Temporizador detenido manualmente por el usuario.")
+  st.warning("Temporizador detenido.")
+  st.rerun()
 
 placeholder_timer = st.empty()
 
 if st.session_state.is_running and st.session_state.next_run_time:
-    ahora = datetime.now()
-    if ahora >= st.session_state.next_run_time:
-        ejecutar_sincronizacion_automatica()
-        st.session_state.next_run_time = datetime.now() + timedelta(seconds=st.session_state.total_seconds_interval)
-        st.rerun()
-    else:
-        restante = (st.session_state.next_run_time - ahora).total_seconds()
-        porcentaje = int(((st.session_state.total_seconds_interval - restante) / st.session_state.total_seconds_interval) * 100)
-        
-        hrs_r = int(restante // 3600)
-        min_r = int((restante % 3600) // 60)
-        sec_r = int(restante % 60)
-        tiempo_str = f"{hrs_r:02d}:{min_r:02d}:{sec_r:02d}"
-        
-        with placeholder_timer.container():
-            st.markdown(f"<p style='color: #38bdf8; font-weight: bold; font-size: 15px; margin-top: 10px;'>PRÓXIMA CARGA EN: {tiempo_str}</p>", unsafe_allow_html=True)
-            st.progress(min(max(porcentaje, 0), 100), text=f"Progreso del ciclo: {porcentaje}%")
-        
-        time.sleep(1)
-        st.rerun()
+  ahora = datetime.now()
+  if ahora >= st.session_state.next_run_time:
+    ejecutar_sincronizacion_automatica()
+    st.session_state.next_run_time = datetime.now() + timedelta(
+        seconds=st.session_state.total_seconds_interval
+    )
+    st.rerun()
+  else:
+    restante = (
+        st.session_state.next_run_time - ahora
+    ).total_seconds()
+    porcentaje = int(
+        (
+            (st.session_state.total_seconds_interval - restante)
+            / st.session_state.total_seconds_interval
+        )
+        * 100
+    )
+
+    hrs_r = int(restante // 3600)
+    min_r = int((restante % 3600) // 60)
+    sec_r = int(restante % 60)
+    tiempo_str = f"{hrs_r:02d}:{min_r:02d}:{sec_r:02d}"
+
+    with placeholder_timer.container():
+      st.markdown(
+          f"<p style='color: #38bdf8; font-weight: bold; font-size: 15px;"
+          f" margin-top: 10px;'>PRÓXIMA CARGA EN: {tiempo_str}</p>",
+          unsafe_allow_html=True,
+      )
+      st.progress(
+          min(max(porcentaje, 0), 100),
+          text=f"Progreso del ciclo: {porcentaje}%",
+      )
+
+    time.sleep(1)
+    st.rerun()
 else:
-    placeholder_timer.markdown("<p style='color: #94a3b8; font-size: 13px; font-style: italic;'>El temporizador se encuentra detenido. Define el tiempo y haz clic en INICIAR.</p>", unsafe_allow_html=True)
+  placeholder_timer.markdown(
+      "<p style='color: #94a3b8; font-size: 13px; font-style: italic;'>El"
+      " temporizador se encuentra detenido. Define el tiempo y haz clic en"
+      " INICIAR.</p>",
+      unsafe_allow_html=True,
+  )
 
 st.markdown("---")
 
@@ -312,90 +445,33 @@ st.markdown("---")
 # ==========================================
 st.markdown("#### 🖥️ Consola de Registros del Sistema")
 logs_html = "<br>".join(st.session_state.logs)
-st.markdown(f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True)
+st.markdown(
+    f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
+)
 
 st.markdown("---")
 
 # ==========================================
-# 8. ANÁLISIS Y COMPARATIVA DE COINCIDENCIAS (PG vs API)
-# ==========================================
-st.markdown("#### 🔍 Comparativa de Coincidencias: PostgreSQL vs API")
-
-df_filtrado_global = cargar_datos_api()
-try:
-    engine_pg_comp = obtener_motor_postgres()
-    df_pg_comp = pd.read_sql('SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg_comp)
-except Exception:
-    df_pg_comp = pd.DataFrame()
-
-if not df_pg_comp.empty and not df_filtrado_global.empty:
-    if 'Predio_Viv' in df_pg_comp.columns and 'predio' in df_filtrado_global.columns:
-        # Clave compuesta para comparación PG
-        s_split_c = df_pg_comp['Predio_Viv'].astype(str).str.strip().str.upper().str.split('-', n=1, expand=True)
-        p_pg_c = s_split_c[0]
-        u_pg_c = s_split_c[1].fillna('0') if s_split_c.shape[1] > 1 else '0'
-        set_pg = set(p_pg_c + "_" + u_pg_c)
-
-        # Clave compuesta para comparación API
-        p_api_c = df_filtrado_global['predio'].astype(str).str.strip().str.upper()
-        u_api_c = df_filtrado_global['unidad'].astype(str).str.strip().str.upper() if 'unidad' in df_filtrado_global.columns else '0'
-        set_api = set(p_api_c + "_" + u_api_c)
-        
-        coincidencias = set_pg.intersection(set_api)
-        solo_pg = set_pg - set_api
-        solo_api = set_api - set_pg
-        
-        col_c1, col_c2, col_c3, col_c4 = st.columns(4)
-        with col_c1:
-            st.metric("Total Registros (PG)", f"{len(set_pg):,}")
-        with col_c2:
-            st.metric("Total Registros (API)", f"{len(set_api):,}")
-        with col_c3:
-            st.metric("Coincidentes", f"{len(coincidencias):,}")
-        with col_c4:
-            st.metric("Sin Coincidencia", f"{len(solo_pg) + len(solo_api):,}")
-            
-        with st.expander("Ver detalle de la comparativa en tabla"):
-            df_resumen_match = pd.DataFrame({
-                "Métrica": [
-                    "Total Registros en PostgreSQL",
-                    "Total Registros en API",
-                    "Predios con Unidad Coincidente Exacta",
-                    "Registros solo en PostgreSQL (Sin match en API)",
-                    "Registros solo en API (Sin match en PostgreSQL)"
-                ],
-                "Cantidad": [
-                    len(set_pg),
-                    len(set_api),
-                    len(coincidencias),
-                    len(solo_pg),
-                    len(solo_api)
-                ]
-            })
-            st.dataframe(df_resumen_match, use_container_width=True)
-    else:
-        st.warning("No se pudieron detectar las columnas necesarias para realizar el cruce compuesto.")
-else:
-    st.info("Cargando datos de PostgreSQL y la API para calcular las coincidencias...")
-
-st.markdown("---")
-
-# ==========================================
-# 9. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
+# 8. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
 # ==========================================
 tab1, tab2 = st.tabs([
-    "🚰 Panel Principal y Gestión", 
-    "📋 Tablas de Datos (PostgreSQL y API)"
+    "🚰 Panel Principal y Gestión",
+    "📋 Tablas de Datos (PostgreSQL y API)",
 ])
 
 total_registros_db = obtener_total_registros()
 
 with tab1:
-    st.markdown("<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>Gestión de Tabla PostgreSQL: usuarios_miaa_conmedidor</p>", unsafe_allow_html=True)
-    if total_registros_db > 0:
-        c_m1, c_m2, c_m3 = st.columns(3)
-        with c_m1:
-            st.markdown(f"""
+  st.markdown(
+      "<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>Gestión"
+      ' de Tabla PostgreSQL: usuarios_miaa_conmedidor</p>',
+      unsafe_allow_html=True,
+  )
+  if total_registros_db > 0:
+    c_m1, c_m2, c_m3 = st.columns(3)
+    with c_m1:
+      st.markdown(
+          f"""
                 <div class="metric-card">
                     <div class="metric-icon-box" style="color: #38bdf8;"><i class="fa-solid fa-database"></i></div>
                     <div class="metric-content">
@@ -403,9 +479,12 @@ with tab1:
                         <div class="metric-value">{total_registros_db:,}</div>
                     </div>
                 </div>
-            """, unsafe_allow_html=True)
-        with c_m2:
-            st.markdown(f"""
+            """,
+          unsafe_allow_html=True,
+      )
+    with c_m2:
+      st.markdown(
+          f"""
                 <div class="metric-card">
                     <div class="metric-icon-box" style="color: #4ade80;"><i class="fa-solid fa-circle-check"></i></div>
                     <div class="metric-content">
@@ -413,9 +492,12 @@ with tab1:
                         <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Optimizado (SQL Paginado)</div>
                     </div>
                 </div>
-            """, unsafe_allow_html=True)
-        with c_m3:
-            st.markdown(f"""
+            """,
+          unsafe_allow_html=True,
+      )
+    with c_m3:
+      st.markdown(
+          f"""
                 <div class="metric-card">
                     <div class="metric-icon-box" style="color: #f59e0b;"><i class="fa-solid fa-bolt"></i></div>
                     <div class="metric-content">
@@ -423,52 +505,177 @@ with tab1:
                         <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Alta Velocidad</div>
                     </div>
                 </div>
-            """, unsafe_allow_html=True)
+            """,
+          unsafe_allow_html=True,
+      )
 
-        st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
-        with st.container(border=True):
-            st.markdown("<p style='font-size:13px; font-weight:bold; margin-bottom:8px;'>Vista Previa Paginada (Carga instantánea)</p>", unsafe_allow_html=True)
-            
-            filas_por_pagina = 50
-            total_paginas = max(1, (total_registros_db // filas_por_pagina) + (1 if total_registros_db % filas_por_pagina > 0 else 0))
-            
-            col_p1, col_p2 = st.columns([1, 3])
-            with col_p1:
-                pagina_actual = st.number_input("Página", min_value=1, max_value=total_paginas, value=1, step=1, key="num_pag_t1")
-            with col_p2:
-                st.markdown(f"<p style='margin-top: 25px; color: #94a3b8;'>Página {pagina_actual} de {total_paginas} (Mostrando bloques de 50 registros)</p>", unsafe_allow_html=True)
-            
-            offset_val = (pagina_actual - 1) * filas_por_pagina
-            df_pagina_pg = cargar_pagina_usuarios_db(limit=filas_por_pagina, offset=offset_val)
-            
-            if not df_pagina_pg.empty and not df_filtrado_global.empty:
-                df_pagina_pg = procesar_cruce_datos(df_pagina_pg, df_filtrado_global)
+    # ==========================================
+    # NUEVA SECCIÓN: BORRAR INFORMACIÓN DE CAMPOS (SIN BORRAR FILAS)
+    # ==========================================
+    with st.container(border=True):
+      st.markdown(
+          "#### 🧹 Limpiar Información de Campos (Sin eliminar registros)"
+      )
+      st.markdown(
+          "Busca un registro por su número de **_Serie** y selecciona los"
+          " campos cuyo contenido deseas vaciar (las filas se mantendrán"
+          " intactas)."
+      )
 
-            st.dataframe(df_pagina_pg, use_container_width=True, height=400)
-    else:
-        st.warning("No se encontraron registros en la tabla.")
+      serie_buscar = st.text_input(
+          "Introduce el número de _Serie a modificar:"
+      )
+
+      if serie_buscar:
+        try:
+          engine_pg = obtener_motor_postgres()
+          query_busqueda = text(
+              'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor" WHERE'
+              ' "_Serie" = :serie'
+          )
+          df_resultado_busqueda = pd.read_sql(
+              query_busqueda, con=engine_pg, params={"serie": serie_buscar}
+          )
+
+          if df_resultado_busqueda.empty:
+            st.warning(
+                f"No se encontró ningún registro con la serie: {serie_buscar}"
+            )
+          else:
+            st.success("¡Registro encontrado en la base de datos!")
+            st.dataframe(df_resultado_busqueda, use_container_width=True)
+
+            st.markdown(
+                "**Selecciona los campos que deseas vaciar (poner en blanco):**"
+            )
+            campos_disponibles = [
+                "_Colonia",
+                "_Domicilio",
+                "_Instalador",
+                "_Tipo_instalador",
+                "_Lectura_actual",
+                "_Fecha_registro",
+                "_Fecha_instalacion",
+            ]
+
+            campos_a_limpiar = []
+            cols_check = st.columns(3)
+            for i, campo in enumerate(campos_disponibles):
+              with cols_check[i % 3]:
+                if st.checkbox(f"Vaciar {campo}", key=f"chk_{campo}"):
+                  campos_a_limpiar.append(campo)
+
+            if st.button(
+                "Ejecutar Limpieza de Campos",
+                type="primary",
+                key="btn_limpiar_campos",
+            ):
+              if not campos_a_limpiar:
+                st.error(
+                    "Por favor, selecciona al menos un campo para limpiar."
+                )
+              else:
+                set_clausulas = [f'"{campo}" = NULL' for campo in campos_a_limpiar]
+                set_sql = ", ".join(set_clausulas)
+                query_update = text(
+                    f'UPDATE "Usuarios"."usuarios_miaa_conmedidor" SET'
+                    f" {set_sql} WHERE \"_Serie\" = :serie"
+                )
+
+                with engine_pg.connect() as conn_up:
+                  conn_up.execute(query_update, {"serie": serie_buscar})
+                  conn_up.commit()
+
+                agregar_log(
+                    f"Limpieza de campos exitosa para la serie {serie_buscar}."
+                    f" Campos vaciados: {campos_a_limpiar}"
+                )
+                st.success(
+                    "¡Los campos seleccionados han sido vaciados exitosamente"
+                    " (la fila se mantiene registrada)!"
+                )
+                st.rerun()
+
+        except Exception as e:
+          st.error(f"Error al procesar la búsqueda o actualización: {e}")
+
+    st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
+
+    with st.container(border=True):
+      st.markdown(
+          "<p style='font-size:13px; font-weight:bold;"
+          " margin-bottom:8px;'>Vista Previa Paginada (Carga instantánea)</p>",
+          unsafe_allow_html=True,
+      )
+
+      filas_por_pagina = 50
+      total_paginas = max(
+          1,
+          (total_registros_db // filas_por_pagina)
+          + (1 if total_registros_db % filas_por_pagina > 0 else 0),
+      )
+
+      col_p1, col_p2 = st.columns([1, 3])
+      with col_p1:
+        pagina_actual = st.number_input(
+            "Página",
+            min_value=1,
+            max_value=total_paginas,
+            value=1,
+            step=1,
+            key="num_pag_t1",
+        )
+      with col_p2:
+        st.markdown(
+            f"<p style='margin-top: 25px; color: #94a3b8;'>Página"
+            f" {pagina_actual} de {total_paginas} (Mostrando bloques de 50"
+            " registros)</p>",
+            unsafe_allow_html=True,
+        )
+
+      offset_val = (pagina_actual - 1) * filas_por_pagina
+      df_pagina_pg = cargar_pagina_usuarios_db(
+          limit=filas_por_pagina, offset=offset_val
+      )
+
+      df_filtrado = cargar_datos_api()
+      if not df_pagina_pg.empty and not df_filtrado.empty:
+        df_pagina_pg = procesar_cruce_datos(df_pagina_pg, df_filtrado)
+
+      st.dataframe(df_pagina_pg, use_container_width=True, height=400)
+  else:
+    st.warning("No se encontraron registros en la tabla.")
 
 with tab2:
-    st.subheader("🚰 Tabla: usuarios_miaa_conmedidor (PostgreSQL - Bloques SQL)")
-    if total_registros_db > 0:
-        t2_filas = 50
-        t2_total_pags = max(1, (total_registros_db // t2_filas) + (1 if total_registros_db % t2_filas > 0 else 0))
-        t2_pag = st.selectbox("Seleccionar página", range(1, t2_total_pags + 1), key="select_pag_t2")
-        
-        t2_off = (t2_pag - 1) * t2_filas
-        df_t2 = cargar_pagina_usuarios_db(limit=t2_filas, offset=t2_off)
-        if not df_t2.empty and not df_filtrado_global.empty:
-            df_t2 = procesar_cruce_datos(df_t2, df_filtrado_global)
-            
-        st.dataframe(df_t2, use_container_width=True, height=350)
-    else:
-        st.warning("No hay datos cargados de PostgreSQL.")
+  st.subheader(
+      "🚰 Tabla: usuarios_miaa_conmedidor (PostgreSQL - Bloques SQL)"
+  )
+  if total_registros_db > 0:
+    t2_filas = 50
+    t2_total_pags = max(
+        1,
+        (total_registros_db // t2_filas)
+        + (1 if total_registros_db % t2_filas > 0 else 0),
+    )
+    t2_pag = st.selectbox(
+        "Seleccionar página", range(1, t2_total_pags + 1), key="select_pag_t2"
+    )
 
-    st.markdown("---")
-    
-    st.subheader("🌐 Tabla: Datos de la API de Instalación")
-    if not df_filtrado_global.empty:
-        st.dataframe(df_filtrado_global.head(100), use_container_width=True, height=350)
-    else:
-        st.warning("No hay datos cargados desde la API.")
+    t2_off = (t2_pag - 1) * t2_filas
+    df_t2 = cargar_pagina_usuarios_db(limit=t2_filas, offset=t2_off)
+    if not df_t2.empty and not df_filtrado.empty:
+      df_t2 = procesar_cruce_datos(df_t2, df_filtrado)
+
+    st.dataframe(df_t2, use_container_width=True, height=350)
+  else:
+    st.warning("No hay datos cargados de PostgreSQL.")
+
+  st.markdown("---")
+
+  st.subheader("🌐 Tabla: Datos de la API de Instalación")
+  if not df_filtrado.empty:
+    st.dataframe(df_filtrado.head(100), use_container_width=True, height=350)
+  else:
+    st.warning("No hay datos cargados desde la API.")
