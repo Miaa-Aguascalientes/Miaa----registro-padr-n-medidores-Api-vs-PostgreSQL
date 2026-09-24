@@ -68,21 +68,30 @@ if "logs" not in st.session_state:
   hora_actual_mx = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs = [
       f"[{hora_actual_mx}] Sistema inicializado en segundo plano. Listo para"
-      " operar sin bloquear la interfaz."
+      " operar."
   ]
 
 if "is_syncing" not in st.session_state:
   st.session_state.is_syncing = False
 
+if "sync_progress" not in st.session_state:
+  st.session_state.sync_progress = 0.0  # 0.0 a 1.0
+
+if "sync_status_text" not in st.session_state:
+  st.session_state.sync_status_text = "Sistema en reposo."
+
 log_lock = threading.Lock()
 
 
-def agregar_log(mensaje):
-  timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
+def actualizar_estado_proceso(progreso, texto, log_msj=None):
   with log_lock:
-    st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
-    if len(st.session_state.logs) > 150:
-      st.session_state.logs.pop()
+    st.session_state.sync_progress = float(progreso)
+    st.session_state.sync_status_text = str(texto)
+    if log_msj:
+      timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
+      st.session_state.logs.insert(0, f"[{timestamp}] {log_msj}")
+      if len(st.session_state.logs) > 150:
+        st.session_state.logs.pop()
 
 
 # ==========================================
@@ -151,6 +160,7 @@ def cargar_datos_api():
         url_login,
         json={"username": usuario, "password": password},
         headers={"Content-Type": "application/json"},
+        timeout=15,
     )
     if res_login.status_code == 200:
       token = res_login.json().get("token") or res_login.json().get(
@@ -163,6 +173,7 @@ def cargar_datos_api():
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {token}",
             },
+            timeout=30,
         )
         if res_inst.status_code == 200:
           data = res_inst.json()
@@ -187,44 +198,96 @@ def ejecutar_sincronizacion_background():
   st.session_state.is_syncing = True
 
   try:
-    agregar_log("🔄 [Paso 1/3] Conectando y autenticando con la API de MIAA...")
+    actualizar_estado_proceso(
+        0.1,
+        "Conectando con la API de MIAA...",
+        "🔄 [Paso 1/4] Iniciando autenticación con la API de MIAA...",
+    )
     usuario = st.secrets["api"]["usuario"]
     password = st.secrets["api"]["password"]
 
-    res_login = requests.post(
-        url_login,
-        json={"username": usuario, "password": password},
-        headers={"Content-Type": "application/json"},
-    )
-    if res_login.status_code != 200:
-      agregar_log(
-          "❌ Error crítico: Falló la autenticación con la API de MIAA."
+    try:
+      res_login = requests.post(
+          url_login,
+          json={"username": usuario, "password": password},
+          headers={"Content-Type": "application/json"},
+          timeout=15,
       )
-      st.session_state.is_syncing = False
+    except requests.exceptions.Timeout:
+      actualizar_estado_proceso(
+          0.0,
+          "Error: Timeout en login API",
+          "❌ Error crítico: La API de MIAA tardó demasiado en responder en el"
+          " login (Timeout).",
+      )
+      return
+    except Exception as ex_log:
+      actualizar_estado_proceso(
+          0.0,
+          f"Error de red: {ex_log}",
+          f"❌ Error de red al conectar con el login de la API: {ex_log}",
+      )
+      return
+
+    if res_login.status_code != 200:
+      actualizar_estado_proceso(
+          0.0,
+          f"Error HTTP {res_login.status_code} en Login",
+          f"❌ Error crítico: Falló la autenticación con la API (Código"
+          f" {res_login.status_code}).",
+      )
       return
 
     token = res_login.json().get("token") or res_login.json().get(
         "access_token"
     )
     if not token:
-      agregar_log("❌ Error crítico: No se encontró token de acceso en la API.")
-      st.session_state.is_syncing = False
+      actualizar_estado_proceso(
+          0.0,
+          "Error: Token no encontrado",
+          "❌ Error crítico: La respuesta del login no contiene token de acceso.",
+      )
       return
 
-    agregar_log(
+    actualizar_estado_proceso(
+        0.3,
+        "Descargando registros de instalaciones...",
         "✅ Autenticación exitosa. Descargando registros de instalaciones"
-        " desde la API..."
+        " desde la API...",
     )
-    res_inst = requests.get(
-        url_instalaciones,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-        },
-    )
+
+    try:
+      res_inst = requests.get(
+          url_instalaciones,
+          headers={
+              "Content-Type": "application/json",
+              "Authorization": f"Bearer {token}",
+          },
+          timeout=45,
+      )
+    except requests.exceptions.Timeout:
+      actualizar_estado_proceso(
+          0.0,
+          "Error: Timeout descargando instalaciones",
+          "❌ Error crítico: La API tardó demasiado tiempo en devolver las"
+          " instalaciones (Timeout).",
+      )
+      return
+    except Exception as ex_inst:
+      actualizar_estado_proceso(
+          0.0,
+          f"Error descargando: {ex_inst}",
+          f"❌ Error al solicitar las instalaciones a la API: {ex_inst}",
+      )
+      return
+
     if res_inst.status_code != 200:
-      agregar_log("❌ Error crítico: No se pudieron descargar las instalaciones.")
-      st.session_state.is_syncing = False
+      actualizar_estado_proceso(
+          0.0,
+          f"Error HTTP {res_inst.status_code} en instalaciones",
+          f"❌ Error crítico: La API devolvió código HTTP"
+          f" {res_inst.status_code} al pedir instalaciones.",
+      )
       return
 
     data = res_inst.json()
@@ -242,13 +305,16 @@ def ejecutar_sincronizacion_background():
       df = pd.DataFrame()
 
     if df.empty:
-      agregar_log("❌ Error: La API devolvió un conjunto de datos vacío.")
-      st.session_state.is_syncing = False
+      actualizar_estado_proceso(
+          0.0, "Error: Dataset vacío", "❌ Error: La API devolvió datos vacíos."
+      )
       return
 
-    agregar_log(
+    actualizar_estado_proceso(
+        0.5,
+        f"Procesando {len(df):,} registros descargados...",
         f"📦 Registros obtenidos de la API: {len(df):,}. Limpiando columnas y"
-        " estructurando datos..."
+        " armando Predio_Viv...",
     )
 
     cols_a_remover = [
@@ -293,9 +359,11 @@ def ejecutar_sincronizacion_background():
       df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
     # Paso 2: Staging en Postgres
-    agregar_log(
-        "🔄 [Paso 2/3] Conectando con PostgreSQL y creando tabla temporal"
-        " (temp_api_staging)..."
+    actualizar_estado_proceso(
+        0.7,
+        "Creando tabla temporal en PostgreSQL...",
+        "🔄 [Paso 2/4] Conectando con PostgreSQL y creando tabla temporal"
+        " (temp_api_staging)...",
     )
     engine_pg = obtener_motor_postgres()
 
@@ -374,9 +442,10 @@ def ejecutar_sincronizacion_background():
       df_staging["api_tipo"] = "MIAA"
 
     with engine_pg.begin() as conn:
-      agregar_log(
-          "💾 Subiendo y cargando bloques de datos a 'temp_api_staging' en"
-          " PostgreSQL..."
+      actualizar_estado_proceso(
+          0.85,
+          "Insertando en tabla staging (temp_api_staging)...",
+          "💾 Subiendo registros en bloques a 'temp_api_staging' en PostgreSQL...",
       )
       df_staging.to_sql(
           "temp_api_staging",
@@ -388,9 +457,11 @@ def ejecutar_sincronizacion_background():
       )
 
     # Paso 3: Update SQL
-    agregar_log(
-        "🔄 [Paso 3/3] Ejecutando sentencia UPDATE masiva en PostgreSQL (cruces"
-        " por Predio o Cliente)..."
+    actualizar_estado_proceso(
+        0.95,
+        "Ejecutando UPDATE masivo en base de datos...",
+        "🔄 [Paso 3/4] Ejecutando sentencia UPDATE masiva en PostgreSQL (cruces"
+        " por Predio o Cliente)...",
     )
     query_update = text("""
             UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
@@ -413,23 +484,32 @@ def ejecutar_sincronizacion_background():
     with engine_pg.begin() as conn:
       conn.execute(query_update)
 
-    agregar_log(
-        "✅ ¡Sincronización completada exitosamente en la base de datos!"
+    actualizar_estado_proceso(
+        1.0,
+        "¡Sincronización completada con éxito!",
+        "✅ ¡Paso 4/4] Sincronización completada exitosamente en la base de"
+        " datos!",
     )
 
   except Exception as e:
-    agregar_log(f"❌ Excepción crítica en el proceso: {e}")
+    actualizar_estado_proceso(
+        0.0, f"Error crítico: {e}", f"❌ Excepción crítica en el proceso: {e}"
+    )
   finally:
     st.session_state.is_syncing = False
 
 
 def disparar_hilo():
   if not st.session_state.is_syncing:
+    with log_lock:
+      timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
+      st.session_state.logs.insert(
+          0, f"[{timestamp}] 🚀 Hilo de ejecución en segundo plano iniciado."
+      )
     hilo = threading.Thread(
         target=ejecutar_sincronizacion_background, daemon=True
     )
     hilo.start()
-    agregar_log("🚀 Hilo de ejecución en segundo plano iniciado.")
 
 
 # ==========================================
@@ -454,7 +534,9 @@ with st.sidebar:
     if not st.session_state.is_syncing:
       disparar_hilo()
     else:
-      st.warning("El sistema ya se encuentra ejecutando un proceso.")
+      st.warning(
+          "El sistema ya se encuentra ejecutando un proceso de inserción."
+      )
 
   st.markdown("---")
   st.markdown("#### Ejecución Periódica")
@@ -483,15 +565,21 @@ with st.sidebar:
     st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
         seconds=total_segundos
     )
-    agregar_log(
-        f"Temporizador automático activado ({intervalo_sel.lower()})."
-    )
+    with log_lock:
+      ts = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
+      st.session_state.logs.insert(
+          0, f"[{ts}] Temporizador automático activado ({intervalo_sel.lower()})."
+      )
     st.success("¡Temporizador activo!")
 
   if btn_parar:
     st.session_state.is_running_timer = False
     st.session_state.next_run_time = None
-    agregar_log("Temporizador automático detenido.")
+    with log_lock:
+      ts = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
+      st.session_state.logs.insert(
+          0, f"[{ts}] Temporizador automático detenido."
+      )
     st.warning("Temporizador detenido.")
 
 # ==========================================
@@ -504,10 +592,10 @@ st.markdown("---")
 
 
 # ==========================================
-# 8. FRAGMENTO REACTIVO EN VIVO (SIN BLOQUEAR / SIN OPACIDAD)
+# 8. FRAGMENTO REACTIVO EN VIVO (CONSOLA + BARRA DE PROGRESO REAL)
 # ==========================================
 @st.fragment(run_every=0.5)
-def renderizar_consola_en_vivo():
+def renderizar_consola_y_progreso():
   if st.session_state.is_running_timer and st.session_state.next_run_time:
     ahora_mx = datetime.now(ZONA_MEXICO)
     if ahora_mx >= st.session_state.next_run_time:
@@ -517,38 +605,30 @@ def renderizar_consola_en_vivo():
           seconds=st.session_state.total_seconds_interval
       )
 
+  # Barra superior de cuenta regresiva del temporizador
   if st.session_state.is_running_timer and st.session_state.next_run_time:
     ahora_mx = datetime.now(ZONA_MEXICO)
     restante = max(
         0, int((st.session_state.next_run_time - ahora_mx).total_seconds())
     )
     total = st.session_state.total_seconds_interval
-    progreso = min(1.0, max(0.0, (total - restante) / total))
+    progreso_timer = min(1.0, max(0.0, (total - restante) / total))
     mins, secs = divmod(restante, 60)
     st.markdown(
         f"<p style='font-size: 13px; color: #38bdf8; font-weight: bold;"
-        f" margin-bottom: 4px;'>⏱️ Próxima ejecución automática en:"
-        f" {mins:02d}:{secs:02d} { ' | 🔄 EJECUTANDO PROCESO...' if st.session_state.is_syncing else '' }</p>",
+        f" margin-bottom: 2px;'>⏱️ Próxima ejecución automática en:"
+        f" {mins:02d}:{secs:02d}</p>",
         unsafe_allow_html=True,
     )
-    st.progress(progreso)
+    st.progress(progreso_timer)
   else:
-    if st.session_state.is_syncing:
-      st.markdown(
-          "<p style='font-size: 13px; color: #22c55e; font-weight: bold;"
-          " margin-bottom: 4px;'>🔄 Ejecutando proceso de sincronización en"
-          " segundo plano (la pantalla no se bloquea)...</p>",
-          unsafe_allow_html=True,
-      )
-      st.progress(1.0)
-    else:
-      st.markdown(
-          "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
-          " margin-bottom: 4px;'>⏸️ Temporizador inactivo. Haz clic en INICIAR"
-          " en la barra lateral o usa 'Ejecutar Ahora'.</p>",
-          unsafe_allow_html=True,
-      )
-      st.progress(0.0)
+    st.markdown(
+        "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
+        " margin-bottom: 2px;'>⏸️ Temporizador inactivo. Usa 'Ejecutar Ahora'"
+        " en la barra lateral.</p>",
+        unsafe_allow_html=True,
+    )
+    st.progress(0.0)
 
   st.markdown("#### 🖥️ Consola de Registros en Tiempo Real")
   with log_lock:
@@ -557,8 +637,36 @@ def renderizar_consola_en_vivo():
       f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
   )
 
+  # BARRA DE PROGRESO REAL DEL PROCESO DE INSERCIÓN (JUSTO DEBAJO DE LA CONSOLA)
+  st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+  current_prog = st.session_state.sync_progress
+  current_text = st.session_state.sync_status_text
 
-renderizar_consola_en_vivo()
+  if st.session_state.is_syncing:
+    st.markdown(
+        f"<p style='font-size: 13px; color: #f59e0b; font-weight: bold;"
+        f" margin-bottom: 4px;'>🔄 Estado de Inserción: {current_text}"
+        f" ({int(current_prog * 100)}%)</p>",
+        unsafe_allow_html=True,
+    )
+  elif current_prog >= 1.0:
+    st.markdown(
+        f"<p style='font-size: 13px; color: #22c55e; font-weight: bold;"
+        f" margin-bottom: 4px;'>✅ Estado de Inserción: {current_text}"
+        " (100%)</p>",
+        unsafe_allow_html=True,
+    )
+  else:
+    st.markdown(
+        f"<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
+        f" margin-bottom: 4px;'>💤 Estado de Inserción: {current_text}</p>",
+        unsafe_allow_html=True,
+    )
+
+  st.progress(current_prog)
+
+
+renderizar_consola_y_progreso()
 
 st.markdown("---")
 
@@ -679,11 +787,15 @@ with tab1:
               conn_up.execute(query_update_masivo)
               conn_up.commit()
 
-            agregar_log(
-                f"Limpieza masiva ejecutada. Campos vaciados en toda la tabla:"
-                f" {campos_a_limpiar_masivo}"
-            )
+            with log_lock:
+              ts = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
+              st.session_state.logs.insert(
+                  0,
+                  f"[{ts}] Limpieza masiva ejecutada en campos:"
+                  f" {campos_a_limpiar_masivo}",
+              )
             st.success("¡Los campos seleccionados han sido vaciados con éxito!")
+            st.rerun()
           except Exception as e:
             st.error(f"Error al ejecutar la limpieza masiva: {e}")
 
