@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import time
 from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
@@ -47,7 +48,7 @@ st.markdown(
             font-family: 'Courier New', Courier, monospace;
             padding: 15px;
             border-radius: 6px;
-            height: 200px;
+            height: 250px;
             overflow-y: scroll;
             font-size: 13px;
             line-height: 1.4;
@@ -58,26 +59,30 @@ st.markdown(
 )
 
 # ==========================================
-# 2. GESTIÓN DE LOGS (CONSOLA - HORA MÉXICO)
+# 2. GESTIÓN DE ESTADOS Y CONTROL DE TIEMPO
 # ==========================================
 ZONA_MEXICO = ZoneInfo("America/Mexico_City")
 
 if "logs" not in st.session_state:
   hora_actual_mx = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs = [
-      f"[{hora_actual_mx}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
+      f"[{hora_actual_mx}] Sistema inicializado. Listo para operar."
   ]
+
+# Control para el temporizador automático de 15 minutos (900 segundos)
+if "ultimo_tiempo_ejecucion" not in st.session_state:
+  st.session_state.ultimo_tiempo_ejecucion = time.time()
 
 
 def agregar_log(mensaje):
   timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
-  if len(st.session_state.logs) > 100:
+  if len(st.session_state.logs) > 150:
     st.session_state.logs.pop()
 
 
 # ==========================================
-# 3. CONEXIONES Y CONSULTAS OPTIMIZADAS (SQL)
+# 3. CONEXIONES Y CONSULTAS SQL
 # ==========================================
 url_login = "https://prelec.miaa.mx/auth/v2/login"
 url_instalaciones = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones"
@@ -129,7 +134,7 @@ def cargar_pagina_usuarios_db(limit=50, offset=0):
     return pd.read_sql(
         query, con=engine_pg, params={"lim": limit, "off": offset}
     )
-  except Exception as e:
+  except Exception:
     return pd.DataFrame()
 
 
@@ -142,6 +147,7 @@ def cargar_datos_api():
         url_login,
         json={"username": usuario, "password": password},
         headers={"Content-Type": "application/json"},
+        timeout=15,
     )
     if res_login.status_code == 200:
       token = res_login.json().get("token") or res_login.json().get(
@@ -154,481 +160,372 @@ def cargar_datos_api():
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {token}",
             },
+            timeout=30,
         )
         if res_inst.status_code == 200:
           data = res_inst.json()
           if isinstance(data, list):
-            df = pd.DataFrame(data)
+            return pd.DataFrame(data)
           elif isinstance(data, dict):
-            df = pd.DataFrame()
             for key in ["data", "result", "items", "instalaciones"]:
               if key in data and isinstance(data[key], list):
-                df = pd.DataFrame(data[key])
-                break
-            if df.empty:
-              df = pd.DataFrame([data])
-
-          if not df.empty:
-            cols_a_remover = [
-                c
-                for c in df.columns
-                if any(
-                    term in c.lower()
-                    for term in ["foto", "imagen", "img", "fotografia"]
-                )
-            ]
-            df = df.drop(columns=cols_a_remover, errors="ignore")
-
-            col_api_predio = next(
-                (
-                    c
-                    for c in [
-                        "predio",
-                        "predioViv",
-                        "predio_viv",
-                        "numeroPredio",
-                    ]
-                    if c in df.columns
-                ),
-                None,
-            )
-            col_api_unidad = next(
-                (
-                    c
-                    for c in ["unidad", "unidadViv", "unidad_viv"]
-                    if c in df.columns
-                ),
-                None,
-            )
-
-            if col_api_predio:
-
-              def construir_predio_viv(row):
-                p = row[col_api_predio]
-                if pd.isna(p) or str(p).strip().lower() in ["none", "nan", ""]:
-                  return ""
-
-                p_str = str(p).strip()
-                u = (
-                    row[col_api_unidad]
-                    if col_api_unidad and pd.notna(row[col_api_unidad])
-                    else 0
-                )
-                u_str = str(u).strip()
-
-                if u_str.lower() in ["none", "nan", ""]:
-                  u_str = "0"
-
-                return f"{p_str}-{u_str}"
-
-              df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
-
-              if "predio" in df.columns:
-                cols = list(df.columns)
-                cols.remove("Predio_Viv")
-                idx_predio = cols.index("predio")
-                cols.insert(idx_predio, "Predio_Viv")
-                df = df[cols]
-              else:
-                cols = ["Predio_Viv"] + [
-                    col for col in df.columns if col != "Predio_Viv"
-                ]
-                df = df[cols]
-
-          return df
+                return pd.DataFrame(data[key])
+            return pd.DataFrame([data])
     return pd.DataFrame()
-  except Exception as e:
+  except Exception:
     return pd.DataFrame()
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE DOBLE (Predio_Viv o numeroCliente)
+# 4. PROCESO DE SINCRONIZACIÓN DIRECTO
 # ==========================================
-def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
-  df_api_merge = df_filtrado.copy()
-
-  # Clave 1: Predio_Viv
-  if "Predio_Viv" in df_api_merge.columns:
-    df_api_merge["key_predio"] = (
-        df_api_merge["Predio_Viv"].astype(str).str.strip()
-    )
-  else:
-    df_api_merge["key_predio"] = ""
-
-  # Clave 2: numeroCliente (API)
-  col_api_cli = next(
-      (
-          c
-          for c in ["numeroCliente", "numero_cliente", "cliente", "Cliente"]
-          if c in df_api_merge.columns
-      ),
-      None,
-  )
-  if col_api_cli:
-    df_api_merge["key_cliente"] = (
-        df_api_merge[col_api_cli].astype(str).str.strip()
-    )
-  else:
-    df_api_merge["key_cliente"] = ""
-
-  # Función auxiliar para crear diccionarios de búsqueda dual (por Predio y por Cliente)
-  def crear_diccionarios(df_api, col_nombre):
-    d_predio = {}
-    d_cliente = {}
-    for idx, row in df_api.iterrows():
-      p_key = str(row.get("key_predio", "")).strip()
-      c_key = str(row.get("key_cliente", "")).strip()
-      val = row.get(col_nombre)
-
-      if pd.notna(val) and str(val).strip().lower() not in ["none", "nan", ""]:
-        if p_key and p_key not in ["none", "nan", ""]:
-          d_predio[p_key] = val
-        if c_key and c_key not in ["none", "nan", ""]:
-          d_cliente[c_key] = val
-    return d_predio, d_cliente
-
-  dict_serie_p, dict_serie_c = crear_diccionarios(df_api_merge, "serie")
-  dict_colonia_p, dict_colonia_c = crear_diccionarios(df_api_merge, "colonia")
-  dict_dom_p, dict_dom_c = crear_diccionarios(df_api_merge, "domicilio")
-  dict_inst_p, dict_inst_c = crear_diccionarios(
-      df_api_merge, "usuarioNombre"
-  )
-
-  def mapear_tipo_externo(val):
-    if val in [True, 1, "1", "true", "True", "YES", "yes", "S", "s"]:
-      return "Externo"
-    elif val in [False, 0, "0", "false", "False", "NO", "no", "N", "n"]:
-      return "MIAA"
-    return "MIAA"
-
-  if "usuarioExterno" in df_api_merge.columns:
-    df_api_merge["tipo_calculado"] = df_api_merge["usuarioExterno"].apply(
-        mapear_tipo_externo
-    )
-    dict_tipo_p, dict_tipo_c = crear_diccionarios(
-        df_api_merge, "tipo_calculado"
-    )
-  else:
-    dict_tipo_p, dict_tipo_c = {}, {}
-
-  dict_lec_p, dict_lec_c = crear_diccionarios(df_api_merge, "lecturaActual")
-  dict_freg_p, dict_freg_c = crear_diccionarios(
-      df_api_merge, "fechaRegistro"
-  )
-  dict_finst_p, dict_finst_c = crear_diccionarios(
-      df_api_merge, "fechaInstalacion"
-  )
-
-  # Preparar columnas de enlace en PostgreSQL
-  col_pg_predio = next(
-      (
-          c
-          for c in ["Predio_Viv", "predio_viv", "Predio", "predio"]
-          if c in df_conmedidor_pg.columns
-      ),
-      None,
-  )
-  col_pg_cliente = next(
-      (
-          c
-          for c in ["Cliente", "cliente", "numeroCliente", "numero_cliente"]
-          if c in df_conmedidor_pg.columns
-      ),
-      None,
-  )
-
-  if col_pg_predio:
-    df_conmedidor_pg["pg_key_predio"] = (
-        df_conmedidor_pg[col_pg_predio].astype(str).str.strip()
-    )
-  else:
-    df_conmedidor_pg["pg_key_predio"] = ""
-
-  if col_pg_cliente:
-    df_conmedidor_pg["pg_key_cliente"] = (
-        df_conmedidor_pg[col_pg_cliente].astype(str).str.strip()
-    )
-  else:
-    df_conmedidor_pg["pg_key_cliente"] = ""
-
-  # Lógica de resolución: Primero busca por Predio_Viv, si no encuentra, busca por Cliente
-  def resolver_valor(row, d_p, d_c, val_actual):
-    p_k = row.get("pg_key_predio", "")
-    if (
-        p_k
-        and p_k in d_p
-        and pd.notna(d_p[p_k])
-        and str(d_p[p_k]).strip().lower() not in ["none", "nan", ""]
-    ):
-      return d_p[p_k]
-
-    c_k = row.get("pg_key_cliente", "")
-    if (
-        c_k
-        and c_k in d_c
-        and pd.notna(d_c[c_k])
-        and str(d_c[c_k]).strip().lower() not in ["none", "nan", ""]
-    ):
-      return d_c[c_k]
-
-    return val_actual
-
-  df_conmedidor_pg["_Serie"] = df_conmedidor_pg.apply(
-      lambda r: resolver_valor(
-          r, dict_serie_p, dict_serie_c, r.get("_Serie", "")
-      ),
-      axis=1,
-  )
-  df_conmedidor_pg["_Colonia"] = df_conmedidor_pg.apply(
-      lambda r: resolver_valor(
-          r, dict_colonia_p, dict_colonia_c, r.get("_Colonia", "")
-      ),
-      axis=1,
-  )
-  df_conmedidor_pg["_Domicilio"] = df_conmedidor_pg.apply(
-      lambda r: resolver_valor(
-          r, dict_dom_p, dict_dom_c, r.get("_Domicilio", "")
-      ),
-      axis=1,
-  )
-  df_conmedidor_pg["_Instalador"] = df_conmedidor_pg.apply(
-      lambda r: resolver_valor(
-          r, dict_inst_p, dict_inst_c, r.get("_Instalador", "")
-      ),
-      axis=1,
-  )
-  df_conmedidor_pg["_Tipo_instalador"] = df_conmedidor_pg.apply(
-      lambda r: resolver_valor(
-          r, dict_tipo_p, dict_tipo_c, r.get("_Tipo_instalador", "MIAA")
-      ),
-      axis=1,
-  )
-  df_conmedidor_pg["_Lectura_actual"] = pd.to_numeric(
-      df_conmedidor_pg.apply(
-          lambda r: resolver_valor(
-              r, dict_lec_p, dict_lec_c, r.get("_Lectura_actual", 0)
-          ),
-          axis=1,
-      ),
-      errors="coerce",
-  ).fillna(df_conmedidor_pg.get("_Lectura_actual", 0))
-
-  df_conmedidor_pg["_Fecha_registro"] = pd.to_datetime(
-      df_conmedidor_pg.apply(
-          lambda r: resolver_valor(
-              r, dict_freg_p, dict_freg_c, r.get("_Fecha_registro", pd.NaT)
-          ),
-          axis=1,
-      ),
-      errors="coerce",
-  ).fillna(df_conmedidor_pg.get("_Fecha_registro", pd.NaT))
-
-  df_conmedidor_pg["_Fecha_instalacion"] = pd.to_datetime(
-      df_conmedidor_pg.apply(
-          lambda r: resolver_valor(
-              r,
-              dict_finst_p,
-              dict_finst_c,
-              r.get("_Fecha_instalacion", pd.NaT),
-          ),
-          axis=1,
-      ),
-      errors="coerce",
-  ).fillna(df_conmedidor_pg.get("_Fecha_instalacion", pd.NaT))
-
-  df_conmedidor_pg = df_conmedidor_pg.drop(
-      columns=["pg_key_predio", "pg_key_cliente"], errors="ignore"
-  )
-  return df_conmedidor_pg
-
-
-def ejecutar_sincronizacion_automatica():
+def ejecutar_proceso_sincronizacion(es_automatico=False):
+  tipo_ejec = "automático (cada 15 min)" if es_automatico else "manual"
   agregar_log(
-      "🔄 Iniciando ciclo: Intentando conectar y autenticar con la API de MIAA..."
-  )
-  df_filtrado = cargar_datos_api()
-
-  if df_filtrado.empty:
-    agregar_log(
-        "❌ Error: No se pudo conectar de manera correcta a la API o no devolvió"
-        " datos."
-    )
-    return False
-
-  agregar_log(
-      "✅ Conexión a la API establecida de manera correcta. Registros"
-      f" obtenidos de la API: {len(df_filtrado):,}."
-  )
-  agregar_log(
-      "🔄 Se procede a la actualización de datos de PostgreSQL (cruce y"
-      " almacenamiento)..."
+      f"🚀 Iniciando proceso de sincronización ({tipo_ejec}) con la API..."
   )
 
   try:
-    engine_pg = obtener_motor_postgres()
-    df_conmedidor_pg = pd.read_sql(
-        'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg
-    )
-  except Exception as ex:
-    agregar_log(f"❌ Error al conectar a la base de datos PostgreSQL: {ex}")
-    return False
+    usuario = st.secrets["api"]["usuario"]
+    password = st.secrets["api"]["password"]
+  except Exception as e:
+    agregar_log(f"❌ Error leyendo st.secrets: {e}")
+    return
 
-  if not df_conmedidor_pg.empty:
-    total_predios = len(df_conmedidor_pg)
-    agregar_log(
-        f"Procesando cruce estricto de información para {total_predios:,}"
-        " predios en PostgreSQL..."
+  # 1. Login API
+  agregar_log("🔄 [Paso 1/3] Conectando al login de MIAA...")
+  try:
+    res_login = requests.post(
+        url_login,
+        json={"username": usuario, "password": password},
+        headers={"Content-Type": "application/json"},
+        timeout=20,
     )
-    df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
-    try:
-      df_actualizado.to_sql(
-          "usuarios_miaa_conmedidor",
-          con=engine_pg,
-          schema="Usuarios",
-          if_exists="replace",
-          index=False,
-      )
-      agregar_log(
-          f"✅ ¡Actualización completada con éxito! Se han actualizado"
-          f" {total_predios:,} datos/registros en la tabla de PostgreSQL."
-      )
-      return True
-    except Exception as ex:
-      agregar_log(f"❌ Error al guardar los datos actualizados en PG: {ex}")
-      return False
+  except Exception as e:
+    agregar_log(f"❌ Error de red al conectar al login: {e}")
+    return
+
+  if res_login.status_code != 200:
+    agregar_log(f"❌ Falló la autenticación. Código: {res_login.status_code}")
+    return
+
+  try:
+    token = res_login.json().get("token") or res_login.json().get(
+        "access_token"
+    )
+  except Exception:
+    token = None
+
+  if not token:
+    agregar_log("❌ No se pudo extraer el token de acceso.")
+    return
+
+  agregar_log("✅ Autenticación exitosa. Descargando instalaciones...")
+
+  # 2. Descarga de instalaciones
+  try:
+    res_inst = requests.get(
+        url_instalaciones,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        timeout=45,
+    )
+  except Exception as e:
+    agregar_log(f"❌ Error al descargar instalaciones: {e}")
+    return
+
+  if res_inst.status_code != 200:
+    agregar_log(f"❌ Error HTTP en instalaciones: {res_inst.status_code}")
+    return
+
+  try:
+    data = res_inst.json()
+  except Exception as e:
+    agregar_log(f"❌ Error al decodificar JSON: {e}")
+    return
+
+  if isinstance(data, list):
+    df = pd.DataFrame(data)
+  elif isinstance(data, dict):
+    df = pd.DataFrame()
+    for key in ["data", "result", "items", "instalaciones"]:
+      if key in data and isinstance(data[key], list):
+        df = pd.DataFrame(data[key])
+        break
+    if df.empty:
+      df = pd.DataFrame([data])
   else:
-    agregar_log("⚠️ Advertencia: La tabla en PostgreSQL está vacía.")
-    return False
+    df = pd.DataFrame()
+
+  if df.empty:
+    agregar_log("❌ El dataset devuelto por la API está vacío.")
+    return
+
+  agregar_log(
+      f"📦 Registros obtenidos de la API: {len(df):,}. Mapeando campos..."
+  )
+
+  cols_a_remover = [
+      c
+      for c in df.columns
+      if any(
+          term in c.lower() for term in ["foto", "imagen", "img", "fotografia"]
+      )
+  ]
+  df = df.drop(columns=cols_a_remover, errors="ignore")
+
+  col_api_predio = next(
+      (
+          c
+          for c in ["predio", "predioViv", "predio_viv", "numeroPredio"]
+          if c in df.columns
+      ),
+      None,
+  )
+  col_api_unidad = next(
+      (c for c in ["unidad", "unidadViv", "unidad_viv"] if c in df.columns),
+      None,
+  )
+
+  if col_api_predio:
+
+    def construir_predio_viv(row):
+      p = row[col_api_predio]
+      if pd.isna(p) or str(p).strip().lower() in ["none", "nan", ""]:
+        return ""
+      p_str = str(p).strip()
+      u = (
+          row[col_api_unidad]
+          if col_api_unidad and pd.notna(row[col_api_unidad])
+          else 0
+      )
+      u_str = str(u).strip()
+      if u_str.lower() in ["none", "nan", ""]:
+        u_str = "0"
+      return f"{p_str}-{u_str}"
+
+    df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
+
+  col_predio = next(
+      (
+          c
+          for c in ["Predio_Viv", "predioViv", "predio_viv", "predio"]
+          if c in df.columns
+      ),
+      None,
+  )
+  col_cliente = next(
+      (
+          c
+          for c in ["numeroCliente", "numero_cliente", "cliente", "Cliente"]
+          if c in df.columns
+      ),
+      None,
+  )
+  col_serie = next(
+      (c for c in ["serie", "Serie", "numeroSerie"] if c in df.columns), None
+  )
+  col_colonia = next((c for c in ["colonia", "Colonia"] if c in df.columns), None)
+  col_domicilio = next(
+      (c for c in ["domicilio", "Domicilio", "direccion"] if c in df.columns),
+      None,
+  )
+  col_instalador = next(
+      (c for c in ["usuarioNombre", "instalador"] if c in df.columns), None
+  )
+  col_ext = next((c for c in ["usuarioExterno"] if c in df.columns), None)
+  col_lec = next(
+      (c for c in ["lecturaActual", "lectura"] if c in df.columns), None
+  )
+  col_freg = next((c for c in ["fechaRegistro"] if c in df.columns), None)
+  col_finst = next((c for c in ["fechaInstalacion"] if c in df.columns), None)
+
+  agregar_log("🔄 [Paso 2/3] Conectando a PostgreSQL para actualizar registros...")
+  try:
+    engine_pg = obtener_motor_postgres()
+  except Exception as e:
+    agregar_log(f"❌ Error al conectar a PostgreSQL: {e}")
+    return
+
+  query_update_directo = text("""
+        UPDATE "Usuarios"."usuarios_miaa_conmedidor"
+        SET 
+            "_Serie" = COALESCE(NULLIF("_Serie"::text, ''), :serie),
+            "_Colonia" = COALESCE(NULLIF("_Colonia"::text, ''), :colonia),
+            "_Domicilio" = COALESCE(NULLIF("_Domicilio"::text, ''), :domicilio),
+            "_Instalador" = COALESCE(NULLIF("_Instalador"::text, ''), :instalador),
+            "_Tipo_instalador" = COALESCE(NULLIF("_Tipo_instalador"::text, ''), :tipo_inst),
+            "_Lectura_actual" = COALESCE("_Lectura_actual", :lectura),
+            "_Fecha_registro" = COALESCE("_Fecha_registro", :freg),
+            "_Fecha_instalacion" = COALESCE("_Fecha_instalacion", :finst)
+        WHERE 
+            (:predio != '' AND "Predio_Viv"::text = :predio)
+            OR 
+            (:cliente != '' AND "Cliente"::text = :cliente);
+    """)
+
+  actualizados = 0
+
+  try:
+    with engine_pg.begin() as conn:
+      for index, row in df.iterrows():
+        p_val = (
+            str(row[col_predio]).strip()
+            if col_predio and pd.notna(row[col_predio])
+            else ""
+        )
+        c_val = (
+            str(row[col_cliente]).strip()
+            if col_cliente and pd.notna(row[col_cliente])
+            else ""
+        )
+
+        if not p_val and not c_val:
+          continue
+
+        s_val = (
+            str(row[col_serie]).strip()
+            if col_serie and pd.notna(row[col_serie])
+            else None
+        )
+        col_val = (
+            str(row[col_colonia]).strip()
+            if col_colonia and pd.notna(row[col_colonia])
+            else None
+        )
+        dom_val = (
+            str(row[col_domicilio]).strip()
+            if col_domicilio and pd.notna(row[col_domicilio])
+            else None
+        )
+        inst_val = (
+            str(row[col_instalador]).strip()
+            if col_instalador and pd.notna(row[col_instalador])
+            else None
+        )
+
+        tipo_val = "MIAA"
+        if col_ext and pd.notna(row[col_ext]):
+          val_ext = row[col_ext]
+          if val_ext in [True, 1, "1", "true", "True", "YES", "yes", "S", "s"]:
+            tipo_val = "Externo"
+
+        lec_val = (
+            pd.to_numeric(row[col_lec], errors="coerce")
+            if col_lec and pd.notna(row[col_lec])
+            else None
+        )
+        freg_val = (
+            pd.to_datetime(row[col_freg], errors="coerce")
+            if col_freg and pd.notna(row[col_freg])
+            else None
+        )
+        finst_val = (
+            pd.to_datetime(row[col_finst], errors="coerce")
+            if col_finst and pd.notna(row[col_finst])
+            else None
+        )
+
+        conn.execute(
+            query_update_directo,
+            {
+                "predio": p_val,
+                "cliente": c_val,
+                "serie": s_val,
+                "colonia": col_val,
+                "domicilio": dom_val,
+                "instalador": inst_val,
+                "tipo_inst": tipo_val,
+                "lectura": lec_val,
+                "freg": freg_val,
+                "finst": finst_val,
+            },
+        )
+        actualizados += 1
+
+    agregar_log(
+        f"✅ [Paso 3/3] ¡Sincronización completada! Se procesaron"
+        f" {actualizados:,} registros."
+    )
+    # Actualizamos la marca de tiempo de la última ejecución exitosa
+    st.session_state.ultimo_tiempo_ejecucion = time.time()
+  except Exception as e:
+    agregar_log(f"❌ Error crítico en base de datos: {e}")
 
 
 # ==========================================
-# 5. GESTIÓN DE ESTADO PARA EL TEMPORIZADOR
+# 5. VERIFICADOR AUTOMÁTICO DE TIEMPO (CADA 15 MINUTOS)
 # ==========================================
-if "is_running" not in st.session_state:
-  st.session_state.is_running = False
-if "next_run_time" not in st.session_state:
-  st.session_state.next_run_time = None
-if "total_seconds_interval" not in st.session_state:
-  st.session_state.total_seconds_interval = 300
+# Cada vez que la app carga o se interactúa, revisa si ya pasaron 900 segundos (15 mins)
+TIEMPO_INTERVALO = 900  # 15 minutos en segundos
+tiempo_actual = time.time()
+
+if (tiempo_actual - st.session_state.ultimo_tiempo_ejecucion) >= TIEMPO_INTERVALO:
+  agregar_log(
+      "⏰ Han pasado 15 minutos. Ejecutando sincronización automática..."
+  )
+  ejecutar_proceso_sincronizacion(es_automatico=True)
+
 
 # ==========================================
-# 6. TÍTULO Y PANEL DE CONFIGURACIÓN DE TIEMPO
+# 6. BARRA LATERAL (SIDEBAR)
+# ==========================================
+with st.sidebar:
+  st.markdown("<h2>⚙️ Configuración</h2>", unsafe_allow_html=True)
+  st.markdown("---")
+
+  st.markdown("#### Ejecución Manual")
+  if st.button("🚀 Ejecutar Ahora", type="primary", use_container_width=True):
+    with st.spinner("Sincronizando de forma directa... Por favor espera."):
+      ejecutar_proceso_sincronizacion(es_automatico=False)
+    st.rerun()
+
+  st.markdown("---")
+  st.markdown("#### Información del Sistema")
+  tiempo_restante = max(
+      0,
+      int(
+          TIEMPO_INTERVALO
+          - (time.time() - st.session_state.ultimo_tiempo_ejecucion)
+      ),
+  )
+  min_restantes = tiempo_restante // 60
+  seg_restantes = tiempo_restante % 60
+  st.markdown(
+      f"<p style='font-size:12px; color:#94a3b8;'>Próxima sincronización"
+      f" automática en aprox: <b>{min_restantes}m {seg_restantes}s</b></p>",
+      unsafe_allow_html=True,
+  )
+
+# ==========================================
+# 7. TÍTULO PRINCIPAL
 # ==========================================
 st.markdown(
     "<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True
 )
 st.markdown("---")
 
-st.markdown("#### Configuración")
+# ==========================================
+# 8. CONSOLA DE REGISTROS
+# ==========================================
+st.markdown("#### 🖥️ Consola de Registros en Tiempo Real")
+logs_html = "<br>".join(st.session_state.logs)
+st.markdown(
+    f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
+)
 
-with st.container(border=True):
-  c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
-  with c1:
-    modo = st.selectbox(
-        "Modo", ["Periódico"], label_visibility="collapsed"
-    )
-  with c2:
-    opciones_intervalo = {
-        "Cada 1 minuto": 60,
-        "Cada 5 minutos": 300,
-        "Cada 15 minutos": 900,
-        "Cada 30 minutos": 1800,
-        "Cada hora": 3600,
-    }
-    intervalo_sel = st.selectbox(
-        "Intervalo", list(opciones_intervalo.keys()), label_visibility="collapsed"
-    )
-    total_segundos = opciones_intervalo[intervalo_sel]
-  with c3:
-    btn_iniciar = st.button("INICIAR", type="primary", use_container_width=True)
-  with c4:
-    btn_parar = st.button("PARAR", type="secondary", use_container_width=True)
-
-if btn_iniciar:
-  st.session_state.is_running = True
-  st.session_state.total_seconds_interval = total_segundos
-  st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
-      seconds=total_segundos
-  )
-  agregar_log(
-      f"Temporizador iniciado. Próxima ejecución en {intervalo_sel.lower()}."
-  )
-  st.success("¡Temporizador iniciado correctamente!")
-  st.rerun()
-
-if btn_parar:
-  st.session_state.is_running = False
-  st.session_state.next_run_time = None
-  agregar_log("Temporizador detenido manualmente por el usuario.")
-  st.warning("Temporizador detenido.")
-  st.rerun()
-
-st.markdown("---")
-
+st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
 # ==========================================
-# 7. FRAGMENTO AISLADO CON BARRA DE PROGRESO, CONTADOR Y CONSOLA
-# ==========================================
-@st.fragment(run_every=1)
-def renderizar_progreso_y_consola():
-  if st.session_state.is_running and st.session_state.next_run_time:
-    ahora_mx = datetime.now(ZONA_MEXICO)
-    if ahora_mx >= st.session_state.next_run_time:
-      ejecutar_sincronizacion_automatica()
-      st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
-          seconds=st.session_state.total_seconds_interval
-      )
-
-  if st.session_state.is_running and st.session_state.next_run_time:
-    ahora_mx = datetime.now(ZONA_MEXICO)
-    restante = (st.session_state.next_run_time - ahora_mx).total_seconds()
-    restante = max(0, int(restante))
-
-    total_intervalo = st.session_state.total_seconds_interval
-    transcurrido = total_intervalo - restante
-    progreso = min(1.0, max(0.0, transcurrido / total_intervalo))
-
-    mins, secs = divmod(restante, 60)
-    tiempo_formateado = f"{mins:02d}:{secs:02d}"
-
-    st.markdown(
-        f"<p style='font-size: 13px; color: #38bdf8; font-weight: bold;"
-        f" margin-bottom: 4px;'>⏱️ Próxima actualización automática en:"
-        f" {tiempo_formateado}</p>",
-        unsafe_allow_html=True,
-    )
-    st.progress(progreso)
-  else:
-    st.markdown(
-        "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
-        " margin-bottom: 4px;'>⏸️ Temporizador inactivo. Haz clic en INICIAR"
-        " para activar el ciclo automático.</p>",
-        unsafe_allow_html=True,
-    )
-    st.progress(0.0)
-
-  st.markdown("#### 🖥️ Consola de Registros del Sistema")
-  logs_html = "<br>".join(st.session_state.logs)
-  st.markdown(
-      f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
-  )
-
-
-renderizar_progreso_y_consola()
-
-st.markdown("---")
-
-# ==========================================
-# 8. OBTENCIÓN DE DATOS PARA INDICADORES
+# 9. INDICADORES Y PESTAÑAS
 # ==========================================
 total_registros_db = obtener_total_registros()
 total_con_serie = obtener_total_con_serie()
 df_filtrado = cargar_datos_api()
 total_registros_api = len(df_filtrado) if not df_filtrado.empty else 0
 
-# ==========================================
-# 9. TARJETAS DE INDICADORES (A MERO ARRIBA)
-# ==========================================
 if total_registros_db > 0:
   c_m1, c_m2, c_m3 = st.columns(3)
   with c_m1:
@@ -673,9 +570,6 @@ if total_registros_db > 0:
 
   st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
-# ==========================================
-# 10. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
-# ==========================================
 tab1, tab2 = st.tabs([
     "🚰 Panel Principal y Gestión",
     "📋 Tablas de Datos (PostgreSQL y API)",
@@ -688,18 +582,10 @@ with tab1:
       unsafe_allow_html=True,
   )
   if total_registros_db > 0:
-    # ==========================================
-    # LIMPIEZA MASIVA DE CAMPOS (SIN BORRAR FILAS)
-    # ==========================================
     with st.container(border=True):
       st.markdown(
           "#### 🧹 Limpieza Masiva de Campos (Sin eliminar registros)"
       )
-      st.markdown(
-          "Selecciona las columnas cuyos datos deseas **vaciar por completo"
-          " en toda la tabla** a la vez. Las filas se mantendrán intactas."
-      )
-
       campos_disponibles = [
           "_Serie",
           "_Colonia",
@@ -750,13 +636,9 @@ with tab1:
               conn_up.commit()
 
             agregar_log(
-                f"Limpieza masiva ejecutada. Campos vaciados en toda la tabla:"
-                f" {campos_a_limpiar_masivo}"
+                f"Limpieza masiva ejecutada en campos: {campos_a_limpiar_masivo}"
             )
-            st.success(
-                "¡Los campos seleccionados han sido vaciados en todos los"
-                " registros exitosamente!"
-            )
+            st.success("¡Los campos seleccionados han sido vaciados con éxito!")
             st.rerun()
           except Exception as e:
             st.error(f"Error al ejecutar la limpieza masiva: {e}")
@@ -790,8 +672,7 @@ with tab1:
       with col_p2:
         st.markdown(
             f"<p style='margin-top: 25px; color: #94a3b8;'>Página"
-            f" {pagina_actual} de {total_paginas} (Mostrando bloques de 50"
-            " registros)</p>",
+            f" {pagina_actual} de {total_paginas} (Bloques de 50 registros)</p>",
             unsafe_allow_html=True,
         )
 
@@ -799,9 +680,6 @@ with tab1:
       df_pagina_pg = cargar_pagina_usuarios_db(
           limit=filas_por_pagina, offset=offset_val
       )
-
-      if not df_pagina_pg.empty and not df_filtrado.empty:
-        df_pagina_pg = procesar_cruce_datos(df_pagina_pg, df_filtrado)
 
       st.dataframe(df_pagina_pg, use_container_width=True, height=400)
   else:
@@ -824,9 +702,6 @@ with tab2:
 
     t2_off = (t2_pag - 1) * t2_filas
     df_t2 = cargar_pagina_usuarios_db(limit=t2_filas, offset=t2_off)
-    if not df_t2.empty and not df_filtrado.empty:
-      df_t2 = procesar_cruce_datos(df_t2, df_filtrado)
-
     st.dataframe(df_t2, use_container_width=True, height=350)
   else:
     st.warning("No hay datos cargados de PostgreSQL.")
