@@ -1,13 +1,12 @@
+# ==========================================
+# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS
+# ==========================================
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 from sqlalchemy import create_engine, text
 import streamlit as st
 
-# ==========================================
-# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS
-# ==========================================
 st.set_page_config(
     page_title="Gestor de Registros MIAA", page_icon="🚰", layout="wide"
 )
@@ -58,19 +57,16 @@ st.markdown(
 )
 
 # ==========================================
-# 2. GESTIÓN DE LOGS (CONSOLA - HORA MÉXICO)
+# 2. GESTIÓN DE LOGS (CONSOLA)
 # ==========================================
-ZONA_MEXICO = ZoneInfo("America/Mexico_City")
-
 if "logs" not in st.session_state:
-  hora_actual_mx = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs = [
-      f"[{hora_actual_mx}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
+      f"[{datetime.now().strftime('%H:%M:%S')}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
   ]
 
 
 def agregar_log(mensaje):
-  timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
+  timestamp = datetime.now().strftime("%H:%M:%S")
   st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
   if len(st.session_state.logs) > 100:
     st.session_state.logs.pop()
@@ -229,27 +225,88 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE ESTRICTO POR Predio_Viv
+# 4. FUNCIÓN DE CRUCE DUAL (Predio_Viv Y numeroCliente)
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   df_api_merge = df_filtrado.copy()
 
-  if "Predio_Viv" not in df_api_merge.columns:
+  if df_api_merge.empty or df_conmedidor_pg.empty:
     return df_conmedidor_pg
 
-  df_api_merge["key_join"] = (
-      df_api_merge["Predio_Viv"].astype(str).str.strip()
+  # 1. Preparar clave para Predio_Viv
+  if "Predio_Viv" in df_api_merge.columns:
+    df_api_merge["key_predio"] = (
+        df_api_merge["Predio_Viv"].astype(str).str.strip()
+    )
+  else:
+    df_api_merge["key_predio"] = ""
+
+  # 2. Preparar clave para numeroCliente en la API
+  col_api_cliente = next(
+      (
+          c
+          for c in [
+              "numeroCliente",
+              "numero_cliente",
+              "cliente",
+              "Cliente",
+              "numCliente",
+          ]
+          if c in df_api_merge.columns
+      ),
+      None,
+  )
+  if col_api_cliente:
+    df_api_merge["key_cliente"] = (
+        df_api_merge[col_api_cliente].astype(str).str.strip()
+    )
+  else:
+    df_api_merge["key_cliente"] = ""
+
+  # Diccionarios de mapeo por Predio
+  dict_api_serie_p = dict(
+      zip(df_api_merge["key_predio"], df_api_merge.get("serie", ""))
+  )
+  dict_api_colonia_p = dict(
+      zip(df_api_merge["key_predio"], df_api_merge.get("colonia", ""))
+  )
+  dict_api_domicilio_p = dict(
+      zip(df_api_merge["key_predio"], df_api_merge.get("domicilio", ""))
+  )
+  dict_api_instalador_p = dict(
+      zip(df_api_merge["key_predio"], df_api_merge.get("usuarioNombre", ""))
+  )
+  dict_api_lectura_p = dict(
+      zip(df_api_merge["key_predio"], df_api_merge.get("lecturaActual", 0))
+  )
+  dict_api_f_reg_p = dict(
+      zip(df_api_merge["key_predio"], df_api_merge.get("fechaRegistro", ""))
+  )
+  dict_api_f_inst_p = dict(
+      zip(df_api_merge["key_predio"], df_api_merge.get("fechaInstalacion", ""))
   )
 
-  dict_api_serie = dict(zip(df_api_merge["key_join"], df_api_merge.get("serie", "")))
-  dict_api_colonia = dict(
-      zip(df_api_merge["key_join"], df_api_merge.get("colonia", ""))
+  # Diccionarios de mapeo por Cliente
+  dict_api_serie_c = dict(
+      zip(df_api_merge["key_cliente"], df_api_merge.get("serie", ""))
   )
-  dict_api_domicilio = dict(
-      zip(df_api_merge["key_join"], df_api_merge.get("domicilio", ""))
+  dict_api_colonia_c = dict(
+      zip(df_api_merge["key_cliente"], df_api_merge.get("colonia", ""))
   )
-  dict_api_instalador = dict(
-      zip(df_api_merge["key_join"], df_api_merge.get("usuarioNombre", ""))
+  dict_api_domicilio_c = dict(
+      zip(df_api_merge["key_cliente"], df_api_merge.get("domicilio", ""))
+  )
+  dict_api_instalador_c = dict(
+      zip(df_api_merge["key_cliente"], df_api_merge.get("usuarioNombre", ""))
+  )
+  dict_api_lectura_c = dict(
+      zip(df_api_merge["key_cliente"], df_api_merge.get("lecturaActual", 0))
+  )
+  dict_api_f_reg_c = dict(
+      zip(df_api_merge["key_cliente"], df_api_merge.get("fechaRegistro", ""))
+  )
+  dict_api_f_inst_c = dict(
+      zip(df_api_merge["key_cliente"], df_api_merge.get("fechaInstalacion", ""))
   )
 
   def mapear_tipo_externo(val):
@@ -263,22 +320,16 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     df_api_merge["tipo_calculado"] = df_api_merge["usuarioExterno"].apply(
         mapear_tipo_externo
     )
-    dict_api_tipo_inst = dict(
-        zip(df_api_merge["key_join"], df_api_merge["tipo_calculado"])
+    dict_api_tipo_p = dict(
+        zip(df_api_merge["key_predio"], df_api_merge["tipo_calculado"])
+    )
+    dict_api_tipo_c = dict(
+        zip(df_api_merge["key_cliente"], df_api_merge["tipo_calculado"])
     )
   else:
-    dict_api_tipo_inst = {}
+    dict_api_tipo_p, dict_api_tipo_c = {}, {}
 
-  dict_api_lectura = dict(
-      zip(df_api_merge["key_join"], df_api_merge.get("lecturaActual", 0))
-  )
-  dict_api_f_reg = dict(
-      zip(df_api_merge["key_join"], df_api_merge.get("fechaRegistro", ""))
-  )
-  dict_api_f_inst = dict(
-      zip(df_api_merge["key_join"], df_api_merge.get("fechaInstalacion", ""))
-  )
-
+  # Identificar columnas clave en PostgreSQL
   col_pg_predio = next(
       (
           c
@@ -287,50 +338,115 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       ),
       None,
   )
+  col_pg_cliente = next(
+      (
+          c
+          for c in ["Cliente", "cliente", "numeroCliente", "numero_cliente"]
+          if c in df_conmedidor_pg.columns
+      ),
+      None,
+  )
 
-  if col_pg_predio:
-    df_conmedidor_pg["key_join"] = (
-        df_conmedidor_pg[col_pg_predio].astype(str).str.strip()
-    )
-  else:
-    df_conmedidor_pg["key_join"] = ""
+  df_conmedidor_pg["key_predio"] = (
+      df_conmedidor_pg[col_pg_predio].astype(str).str.strip()
+      if col_pg_predio
+      else ""
+  )
+  df_conmedidor_pg["key_cliente"] = (
+      df_conmedidor_pg[col_pg_cliente].astype(str).str.strip()
+      if col_pg_cliente
+      else ""
+  )
 
-  df_conmedidor_pg["_Serie"] = (
-      df_conmedidor_pg["key_join"]
-      .map(dict_api_serie)
-      .fillna(df_conmedidor_pg.get("_Serie", ""))
+  # Lógica de cruce dual: Primero busca por Predio, si no encuentra/está vacío, busca por Cliente
+  def obtener_valor(row, dict_p, dict_c, default_val=""):
+    kp = row["key_predio"]
+    kc = row["key_cliente"]
+
+    if kp and kp.lower() not in ["none", "nan", ""] and kp in dict_p:
+      val = dict_p[kp]
+      if pd.notna(val) and str(val).strip() not in ["", "None", "nan"]:
+        return val
+
+    if kc and kc.lower() not in ["none", "nan", ""] and kc in dict_c:
+      val = dict_c[kc]
+      if pd.notna(val) and str(val).strip() not in ["", "None", "nan"]:
+        return val
+
+    return default_val
+
+  df_conmedidor_pg["_Serie"] = df_conmedidor_pg.apply(
+      lambda r: obtener_valor(
+          r, dict_api_serie_p, dict_api_serie_c, r.get("_Serie", "")
+      ),
+      axis=1,
   )
-  df_conmedidor_pg["_Colonia"] = (
-      df_conmedidor_pg["key_join"]
-      .map(dict_api_colonia)
-      .fillna(df_conmedidor_pg.get("_Colonia", ""))
+  df_conmedidor_pg["_Colonia"] = df_conmedidor_pg.apply(
+      lambda r: obtener_valor(
+          r, dict_api_colonia_p, dict_api_colonia_c, r.get("_Colonia", "")
+      ),
+      axis=1,
   )
-  df_conmedidor_pg["_Domicilio"] = (
-      df_conmedidor_pg["key_join"]
-      .map(dict_api_domicilio)
-      .fillna(df_conmedidor_pg.get("_Domicilio", ""))
+  df_conmedidor_pg["_Domicilio"] = df_conmedidor_pg.apply(
+      lambda r: obtener_valor(
+          r, dict_api_domicilio_p, dict_api_domicilio_c, r.get("_Domicilio", "")
+      ),
+      axis=1,
   )
-  df_conmedidor_pg["_Instalador"] = (
-      df_conmedidor_pg["key_join"]
-      .map(dict_api_instalador)
-      .fillna(df_conmedidor_pg.get("_Instalador", ""))
+  df_conmedidor_pg["_Instalador"] = df_conmedidor_pg.apply(
+      lambda r: obtener_valor(
+          r,
+          dict_api_instalador_p,
+          dict_api_instalador_c,
+          r.get("_Instalador", ""),
+      ),
+      axis=1,
   )
-  df_conmedidor_pg["_Tipo_instalador"] = (
-      df_conmedidor_pg["key_join"]
-      .map(dict_api_tipo_inst)
-      .fillna(df_conmedidor_pg.get("_Tipo_instalador", "MIAA"))
+  df_conmedidor_pg["_Tipo_instalador"] = df_conmedidor_pg.apply(
+      lambda r: obtener_valor(
+          r, dict_api_tipo_p, dict_api_tipo_c, r.get("_Tipo_instalador", "MIAA")
+      ),
+      axis=1,
   )
+
   df_conmedidor_pg["_Lectura_actual"] = pd.to_numeric(
-      df_conmedidor_pg["key_join"].map(dict_api_lectura), errors="coerce"
-  ).fillna(df_conmedidor_pg.get("_Lectura_actual", 0))
-  df_conmedidor_pg["_Fecha_registro"] = pd.to_datetime(
-      df_conmedidor_pg["key_join"].map(dict_api_f_reg), errors="coerce"
-  ).fillna(df_conmedidor_pg.get("_Fecha_registro", pd.NaT))
-  df_conmedidor_pg["_Fecha_instalacion"] = pd.to_datetime(
-      df_conmedidor_pg["key_join"].map(dict_api_f_inst), errors="coerce"
-  ).fillna(df_conmedidor_pg.get("_Fecha_instalacion", pd.NaT))
+      df_conmedidor_pg.apply(
+          lambda r: obtener_valor(
+              r, dict_api_lectura_p, dict_api_lectura_c, r.get("_Lectura_actual", 0)
+          ),
+          axis=1,
+      ),
+      errors="coerce",
+  ).fillna(0)
 
-  df_conmedidor_pg = df_conmedidor_pg.drop(columns=["key_join"], errors="ignore")
+  df_conmedidor_pg["_Fecha_registro"] = pd.to_datetime(
+      df_conmedidor_pg.apply(
+          lambda r: obtener_valor(
+              r,
+              dict_api_f_reg_p,
+              dict_api_f_reg_c,
+              r.get("_Fecha_registro", pd.NaT),
+          ),
+          axis=1,
+      ),
+      errors="coerce",
+  )
+  df_conmedidor_pg["_Fecha_instalacion"] = pd.to_datetime(
+      df_conmedidor_pg.apply(
+          lambda r: obtener_valor(
+              r,
+              dict_api_f_inst_p,
+              dict_api_f_inst_c,
+              r.get("_Fecha_instalacion", pd.NaT),
+          ),
+          axis=1,
+      ),
+      errors="coerce",
+  )
+
+  df_conmedidor_pg = df_conmedidor_pg.drop(
+      columns=["key_predio", "key_cliente"], errors="ignore"
+  )
   return df_conmedidor_pg
 
 
@@ -368,8 +484,8 @@ def ejecutar_sincronizacion_automatica():
   if not df_conmedidor_pg.empty:
     total_predios = len(df_conmedidor_pg)
     agregar_log(
-        f"Procesando cruce estricto de información para {total_predios:,}"
-        " predios en PostgreSQL..."
+        f"Procesando cruce dual de información (Predio / Cliente) para"
+        f" {total_predios:,} registros en PostgreSQL..."
     )
     df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
     try:
@@ -439,8 +555,7 @@ with st.container(border=True):
 if btn_iniciar:
   st.session_state.is_running = True
   st.session_state.total_seconds_interval = total_segundos
-  # Cálculo de próxima ejecución basado en la hora de México
-  st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
+  st.session_state.next_run_time = datetime.now() + timedelta(
       seconds=total_segundos
   )
   agregar_log(
@@ -465,16 +580,16 @@ st.markdown("---")
 @st.fragment(run_every=1)
 def renderizar_progreso_y_consola():
   if st.session_state.is_running and st.session_state.next_run_time:
-    ahora_mx = datetime.now(ZONA_MEXICO)
-    if ahora_mx >= st.session_state.next_run_time:
+    ahora = datetime.now()
+    if ahora >= st.session_state.next_run_time:
       ejecutar_sincronizacion_automatica()
-      st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
+      st.session_state.next_run_time = datetime.now() + timedelta(
           seconds=st.session_state.total_seconds_interval
       )
 
   if st.session_state.is_running and st.session_state.next_run_time:
-    ahora_mx = datetime.now(ZONA_MEXICO)
-    restante = (st.session_state.next_run_time - ahora_mx).total_seconds()
+    ahora = datetime.now()
+    restante = (st.session_state.next_run_time - ahora).total_seconds()
     restante = max(0, int(restante))
 
     total_intervalo = st.session_state.total_seconds_interval
