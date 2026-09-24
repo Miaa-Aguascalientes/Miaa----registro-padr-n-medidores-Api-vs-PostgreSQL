@@ -1058,10 +1058,6 @@ with tab2:
 
     t2_off = (t2_pag - 1) * t2_filas
     df_t2 = cargar_pagina_usuarios_db(limit=t2_filas, offset=t2_off)
-    if not df_t2.empty and not df_filtrado.empty:
-      df_t2, _, _ = procesar_cruce_datos(
-          df_t2, df_filtrado, registrar_auditoria=False
-      )
 
     st.dataframe(df_t2, use_container_width=True, height=350)
   else:
