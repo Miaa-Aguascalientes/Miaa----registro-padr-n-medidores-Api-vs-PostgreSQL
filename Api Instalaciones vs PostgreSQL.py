@@ -239,7 +239,9 @@ def cargar_datos_api():
 # ==========================================
 # 4. FUNCIÓN DE CRUCE SECUENCIAL PURO
 # ==========================================
-def procesar_cruce_datos(df_conmedidor_pg, df_filtrado, registrar_auditoria=False):
+def procesar_cruce_datos(
+    df_conmedidor_pg, df_filtrado, registrar_auditoria=False
+):
   df_api_merge = df_filtrado.copy()
 
   if df_api_merge.empty or df_conmedidor_pg.empty:
@@ -259,7 +261,9 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado, registrar_auditoria=Fals
   invalidos = {"none", "nan", "", "nat", "0", "null", "None", "NaN"}
 
   df_api_p = df_api_merge[~df_api_merge["key_predio"].str.lower().isin(invalidos)]
-  df_api_c = df_api_merge[~df_api_merge["key_cliente"].str.lower().isin(invalidos)]
+  df_api_c = df_api_merge[
+      ~df_api_merge["key_cliente"].str.lower().isin(invalidos)
+  ]
 
   dict_api_serie_p = dict(
       zip(df_api_p["key_predio"], df_api_p.get("serie", ""))
@@ -316,8 +320,12 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado, registrar_auditoria=Fals
     df_api_merge["tipo_calculado"] = df_api_merge["usuarioExterno"].apply(
         mapear_tipo_externo
     )
-    df_api_p = df_api_merge[~df_api_merge["key_predio"].str.lower().isin(invalidos)]
-    df_api_c = df_api_merge[~df_api_merge["key_cliente"].str.lower().isin(invalidos)]
+    df_api_p = df_api_merge[
+        ~df_api_merge["key_predio"].str.lower().isin(invalidos)
+    ]
+    df_api_c = df_api_merge[
+        ~df_api_merge["key_cliente"].str.lower().isin(invalidos)
+    ]
     dict_api_tipo_p = dict(
         zip(df_api_p["key_predio"], df_api_p["tipo_calculado"])
     )
@@ -396,7 +404,10 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado, registrar_auditoria=Fals
     nuevos_domicilios.append(val)
 
     val, _ = aplicar_cruce_secuencial(
-        r, dict_api_instalador_p, dict_api_instalador_c, r.get("_Instalador", "")
+        r,
+        dict_api_instalador_p,
+        dict_api_instalador_c,
+        r.get("_Instalador", ""),
     )
     nuevos_instaladores.append(val)
 
@@ -484,16 +495,28 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado, registrar_auditoria=Fals
 
   df_conmedidor_pg["_Lectura_actual"] = lecturas_limpias
 
-  df_conmedidor_pg["_Fecha_registro"] = (
-      pd.to_datetime(nuevas_f_reg, errors="coerce")
-      .dt.tz_localize("UTC", nonexistent="shift_forward", ambiguous="NaT")
-      .dt.tz_convert(ZONA_MEXICO)
-  )
-  df_conmedidor_pg["_Fecha_instalacion"] = (
-      pd.to_datetime(nuevas_f_inst, errors="coerce")
-      .dt.tz_localize("UTC", nonexistent="shift_forward", ambiguous="NaT")
-      .dt.tz_convert(ZONA_MEXICO)
-  )
+  # --- PROCESAMIENTO SEGURO DE FECHAS (EVITA EL ERROR DE TZ-AWARE) ---
+  def convertir_a_zona_mexico(serie_fechas):
+    s_dt = pd.to_datetime(serie_fechas, errors="coerce")
+    resultado = []
+    for val in s_dt:
+      if pd.isna(val):
+        resultado.append(pd.NaT)
+      else:
+        try:
+          if val.tzinfo is not None:
+            resultado.append(val.astimezone(ZONA_MEXICO))
+          else:
+            localizada = val.tz_localize(
+                "UTC", nonexistent="shift_forward", ambiguous="NaT"
+            )
+            resultado.append(localizada.astimezone(ZONA_MEXICO))
+        except Exception:
+          resultado.append(pd.NaT)
+    return pd.Series(resultado, index=s_dt.index)
+
+  df_conmedidor_pg["_Fecha_registro"] = convertir_a_zona_mexico(nuevas_f_reg)
+  df_conmedidor_pg["_Fecha_instalacion"] = convertir_a_zona_mexico(nuevas_f_inst)
 
   df_conmedidor_pg = df_conmedidor_pg.drop(
       columns=["key_predio", "key_cliente"], errors="ignore"
@@ -569,7 +592,6 @@ def ejecutar_sincronizacion_automatica():
         " registros locales..."
     )
 
-    # AQUÍ ACTIVAMOS LA AUDITORÍA ÚNICAMENTE EN LA EJECUCIÓN REAL
     df_actualizado, c_p, c_c = procesar_cruce_datos(
         df_conmedidor_pg, df_filtrado, registrar_auditoria=True
     )
@@ -957,7 +979,9 @@ with tab1:
         else:
           try:
             engine_pg = obtener_motor_postgres()
-            set_clausulas = [f'"{campo}" = NULL' for campo in campos_a_limpiar_masivo]
+            set_clausulas = [
+                f'"{campo}" = NULL' for campo in campos_a_limpiar_masivo
+            ]
             set_sql = ", ".join(set_clausulas)
             query_update_masivo = text(
                 f'UPDATE "Usuarios"."usuarios_miaa_conmedidor" SET {set_sql}'
@@ -1019,7 +1043,6 @@ with tab1:
       )
 
       if not df_pagina_pg.empty and not df_filtrado.empty:
-        # Aquí NO registramos auditoría para no saturar las vistas previas
         df_pagina_pg, _, _ = procesar_cruce_datos(
             df_pagina_pg, df_filtrado, registrar_auditoria=False
         )
