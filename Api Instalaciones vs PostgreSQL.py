@@ -242,27 +242,56 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE ESTRICTO POR Predio_Viv
+# 4. FUNCIÓN DE CRUCE DOBLE (Predio_Viv o numeroCliente)
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   df_api_merge = df_filtrado.copy()
 
-  if "Predio_Viv" not in df_api_merge.columns:
-    return df_conmedidor_pg
+  # Clave 1: Predio_Viv
+  if "Predio_Viv" in df_api_merge.columns:
+    df_api_merge["key_predio"] = (
+        df_api_merge["Predio_Viv"].astype(str).str.strip()
+    )
+  else:
+    df_api_merge["key_predio"] = ""
 
-  df_api_merge["key_join"] = (
-      df_api_merge["Predio_Viv"].astype(str).str.strip()
+  # Clave 2: numeroCliente (API)
+  col_api_cli = next(
+      (
+          c
+          for c in ["numeroCliente", "numero_cliente", "cliente", "Cliente"]
+          if c in df_api_merge.columns
+      ),
+      None,
   )
+  if col_api_cli:
+    df_api_merge["key_cliente"] = (
+        df_api_merge[col_api_cli].astype(str).str.strip()
+    )
+  else:
+    df_api_merge["key_cliente"] = ""
 
-  dict_api_serie = dict(zip(df_api_merge["key_join"], df_api_merge.get("serie", "")))
-  dict_api_colonia = dict(
-      zip(df_api_merge["key_join"], df_api_merge.get("colonia", ""))
-  )
-  dict_api_domicilio = dict(
-      zip(df_api_merge["key_join"], df_api_merge.get("domicilio", ""))
-  )
-  dict_api_instalador = dict(
-      zip(df_api_merge["key_join"], df_api_merge.get("usuarioNombre", ""))
+  # Función auxiliar para crear diccionarios de búsqueda dual (por Predio y por Cliente)
+  def crear_diccionarios(df_api, col_nombre):
+    d_predio = {}
+    d_cliente = {}
+    for idx, row in df_api.iterrows():
+      p_key = str(row.get("key_predio", "")).strip()
+      c_key = str(row.get("key_cliente", "")).strip()
+      val = row.get(col_nombre)
+
+      if pd.notna(val) and str(val).strip().lower() not in ["none", "nan", ""]:
+        if p_key and p_key not in ["none", "nan", ""]:
+          d_predio[p_key] = val
+        if c_key and c_key not in ["none", "nan", ""]:
+          d_cliente[c_key] = val
+    return d_predio, d_cliente
+
+  dict_serie_p, dict_serie_c = crear_diccionarios(df_api_merge, "serie")
+  dict_colonia_p, dict_colonia_c = crear_diccionarios(df_api_merge, "colonia")
+  dict_dom_p, dict_dom_c = crear_diccionarios(df_api_merge, "domicilio")
+  dict_inst_p, dict_inst_c = crear_diccionarios(
+      df_api_merge, "usuarioNombre"
   )
 
   def mapear_tipo_externo(val):
@@ -276,22 +305,21 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     df_api_merge["tipo_calculado"] = df_api_merge["usuarioExterno"].apply(
         mapear_tipo_externo
     )
-    dict_api_tipo_inst = dict(
-        zip(df_api_merge["key_join"], df_api_merge["tipo_calculado"])
+    dict_tipo_p, dict_tipo_c = crear_diccionarios(
+        df_api_merge, "tipo_calculado"
     )
   else:
-    dict_api_tipo_inst = {}
+    dict_tipo_p, dict_tipo_c = {}, {}
 
-  dict_api_lectura = dict(
-      zip(df_api_merge["key_join"], df_api_merge.get("lecturaActual", 0))
+  dict_lec_p, dict_lec_c = crear_diccionarios(df_api_merge, "lecturaActual")
+  dict_freg_p, dict_freg_c = crear_diccionarios(
+      df_api_merge, "fechaRegistro"
   )
-  dict_api_f_reg = dict(
-      zip(df_api_merge["key_join"], df_api_merge.get("fechaRegistro", ""))
-  )
-  dict_api_f_inst = dict(
-      zip(df_api_merge["key_join"], df_api_merge.get("fechaInstalacion", ""))
+  dict_finst_p, dict_finst_c = crear_diccionarios(
+      df_api_merge, "fechaInstalacion"
   )
 
+  # Preparar columnas de enlace en PostgreSQL
   col_pg_predio = next(
       (
           c
@@ -300,50 +328,117 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       ),
       None,
   )
+  col_pg_cliente = next(
+      (
+          c
+          for c in ["Cliente", "cliente", "numeroCliente", "numero_cliente"]
+          if c in df_conmedidor_pg.columns
+      ),
+      None,
+  )
 
   if col_pg_predio:
-    df_conmedidor_pg["key_join"] = (
+    df_conmedidor_pg["pg_key_predio"] = (
         df_conmedidor_pg[col_pg_predio].astype(str).str.strip()
     )
   else:
-    df_conmedidor_pg["key_join"] = ""
+    df_conmedidor_pg["pg_key_predio"] = ""
 
-  df_conmedidor_pg["_Serie"] = (
-      df_conmedidor_pg["key_join"]
-      .map(dict_api_serie)
-      .fillna(df_conmedidor_pg.get("_Serie", ""))
+  if col_pg_cliente:
+    df_conmedidor_pg["pg_key_cliente"] = (
+        df_conmedidor_pg[col_pg_cliente].astype(str).str.strip()
+    )
+  else:
+    df_conmedidor_pg["pg_key_cliente"] = ""
+
+  # Lógica de resolución: Primero busca por Predio_Viv, si no encuentra, busca por Cliente
+  def resolver_valor(row, d_p, d_c, val_actual):
+    p_k = row.get("pg_key_predio", "")
+    if (
+        p_k
+        and p_k in d_p
+        and pd.notna(d_p[p_k])
+        and str(d_p[p_k]).strip().lower() not in ["none", "nan", ""]
+    ):
+      return d_p[p_k]
+
+    c_k = row.get("pg_key_cliente", "")
+    if (
+        c_k
+        and c_k in d_c
+        and pd.notna(d_c[c_k])
+        and str(d_c[c_k]).strip().lower() not in ["none", "nan", ""]
+    ):
+      return d_c[c_k]
+
+    return val_actual
+
+  df_conmedidor_pg["_Serie"] = df_conmedidor_pg.apply(
+      lambda r: resolver_valor(
+          r, dict_serie_p, dict_serie_c, r.get("_Serie", "")
+      ),
+      axis=1,
   )
-  df_conmedidor_pg["_Colonia"] = (
-      df_conmedidor_pg["key_join"]
-      .map(dict_api_colonia)
-      .fillna(df_conmedidor_pg.get("_Colonia", ""))
+  df_conmedidor_pg["_Colonia"] = df_conmedidor_pg.apply(
+      lambda r: resolver_valor(
+          r, dict_colonia_p, dict_colonia_c, r.get("_Colonia", "")
+      ),
+      axis=1,
   )
-  df_conmedidor_pg["_Domicilio"] = (
-      df_conmedidor_pg["key_join"]
-      .map(dict_api_domicilio)
-      .fillna(df_conmedidor_pg.get("_Domicilio", ""))
+  df_conmedidor_pg["_Domicilio"] = df_conmedidor_pg.apply(
+      lambda r: resolver_valor(
+          r, dict_dom_p, dict_dom_c, r.get("_Domicilio", "")
+      ),
+      axis=1,
   )
-  df_conmedidor_pg["_Instalador"] = (
-      df_conmedidor_pg["key_join"]
-      .map(dict_api_instalador)
-      .fillna(df_conmedidor_pg.get("_Instalador", ""))
+  df_conmedidor_pg["_Instalador"] = df_conmedidor_pg.apply(
+      lambda r: resolver_valor(
+          r, dict_inst_p, dict_inst_c, r.get("_Instalador", "")
+      ),
+      axis=1,
   )
-  df_conmedidor_pg["_Tipo_instalador"] = (
-      df_conmedidor_pg["key_join"]
-      .map(dict_api_tipo_inst)
-      .fillna(df_conmedidor_pg.get("_Tipo_instalador", "MIAA"))
+  df_conmedidor_pg["_Tipo_instalador"] = df_conmedidor_pg.apply(
+      lambda r: resolver_valor(
+          r, dict_tipo_p, dict_tipo_c, r.get("_Tipo_instalador", "MIAA")
+      ),
+      axis=1,
   )
   df_conmedidor_pg["_Lectura_actual"] = pd.to_numeric(
-      df_conmedidor_pg["key_join"].map(dict_api_lectura), errors="coerce"
+      df_conmedidor_pg.apply(
+          lambda r: resolver_valor(
+              r, dict_lec_p, dict_lec_c, r.get("_Lectura_actual", 0)
+          ),
+          axis=1,
+      ),
+      errors="coerce",
   ).fillna(df_conmedidor_pg.get("_Lectura_actual", 0))
+
   df_conmedidor_pg["_Fecha_registro"] = pd.to_datetime(
-      df_conmedidor_pg["key_join"].map(dict_api_f_reg), errors="coerce"
+      df_conmedidor_pg.apply(
+          lambda r: resolver_valor(
+              r, dict_freg_p, dict_freg_c, r.get("_Fecha_registro", pd.NaT)
+          ),
+          axis=1,
+      ),
+      errors="coerce",
   ).fillna(df_conmedidor_pg.get("_Fecha_registro", pd.NaT))
+
   df_conmedidor_pg["_Fecha_instalacion"] = pd.to_datetime(
-      df_conmedidor_pg["key_join"].map(dict_api_f_inst), errors="coerce"
+      df_conmedidor_pg.apply(
+          lambda r: resolver_valor(
+              r,
+              dict_finst_p,
+              dict_finst_c,
+              r.get("_Fecha_instalacion", pd.NaT),
+          ),
+          axis=1,
+      ),
+      errors="coerce",
   ).fillna(df_conmedidor_pg.get("_Fecha_instalacion", pd.NaT))
 
-  df_conmedidor_pg = df_conmedidor_pg.drop(columns=["key_join"], errors="ignore")
+  df_conmedidor_pg = df_conmedidor_pg.drop(
+      columns=["pg_key_predio", "pg_key_cliente"], errors="ignore"
+  )
   return df_conmedidor_pg
 
 
