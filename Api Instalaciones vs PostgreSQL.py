@@ -409,10 +409,12 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     )
     nuevos_tipos.append(val)
 
-    # Lectura actual
+    # Lectura actual (blindado contra tipos complejos)
     val, _ = aplicar_cruce_secuencial(
         r, dict_api_lectura_p, dict_api_lectura_c, r.get("_Lectura_actual", 0)
     )
+    if isinstance(val, (list, dict)):
+      val = 0
     nuevas_lecturas.append(val)
 
     # Fecha registro
@@ -438,9 +440,19 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   df_conmedidor_pg["_Domicilio"] = nuevos_domicilios
   df_conmedidor_pg["_Instalador"] = nuevos_instaladores
   df_conmedidor_pg["_Tipo_instalador"] = nuevos_tipos
-  df_conmedidor_pg["_Lectura_actual"] = pd.to_numeric(
-      nuevas_lecturas, errors="coerce"
-  ).fillna(0)
+
+  # Limpieza y conversión segura para Lectura actual
+  lecturas_limpias = []
+  for v in nuevas_lecturas:
+    try:
+      if pd.isna(v) or str(v).strip().lower() in ["none", "nan", "", "nat"]:
+        lecturas_limpias.append(0.0)
+      else:
+        lecturas_limpias.append(float(v))
+    except (ValueError, TypeError):
+      lecturas_limpias.append(0.0)
+
+  df_conmedidor_pg["_Lectura_actual"] = lecturas_limpias
   df_conmedidor_pg["_Fecha_registro"] = pd.to_datetime(
       nuevas_f_reg, errors="coerce"
   )
