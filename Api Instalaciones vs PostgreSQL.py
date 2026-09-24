@@ -75,6 +75,9 @@ if "ultimo_tiempo_ejecucion" not in st.session_state:
 if "intervalo_minutos" not in st.session_state:
   st.session_state.intervalo_minutos = 15
 
+if "activar_automatico" not in st.session_state:
+  st.session_state.activar_automatico = False
+
 
 def agregar_log(mensaje):
   timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
@@ -179,7 +182,7 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. PROCESO DE SINCRONIZACIÓN DIRECTO
+# 4. PROCESO DE SINCRONIZACIÓN CON PROGRESO
 # ==========================================
 def ejecutar_proceso_sincronizacion(es_automatico=False):
   tipo_ejec = (
@@ -191,14 +194,19 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
       f"🚀 Iniciando proceso de sincronización ({tipo_ejec}) con la API..."
   )
 
+  # Barra de progreso visual para el proceso
+  barra_progreso = st.progress(0, text="Iniciando sincronización...")
+
   try:
     usuario = st.secrets["api"]["usuario"]
     password = st.secrets["api"]["password"]
   except Exception as e:
     agregar_log(f"❌ Error leyendo st.secrets: {e}")
+    barra_progreso.empty()
     return
 
   # 1. Login API
+  barra_progreso.progress(10, text="[1/3] Conectando al login de MIAA...")
   agregar_log("🔄 [Paso 1/3] Conectando al login de MIAA...")
   try:
     res_login = requests.post(
@@ -209,10 +217,12 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
     )
   except Exception as e:
     agregar_log(f"❌ Error de red al conectar al login: {e}")
+    barra_progreso.empty()
     return
 
   if res_login.status_code != 200:
     agregar_log(f"❌ Falló la autenticación. Código: {res_login.status_code}")
+    barra_progreso.empty()
     return
 
   try:
@@ -224,11 +234,15 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
 
   if not token:
     agregar_log("❌ No se pudo extraer el token de acceso.")
+    barra_progreso.empty()
     return
 
   agregar_log("✅ Autenticación exitosa. Descargando instalaciones...")
 
   # 2. Descarga de instalaciones
+  barra_progreso.progress(
+      35, text="[2/3] Descargando registros de instalaciones..."
+  )
   try:
     res_inst = requests.get(
         url_instalaciones,
@@ -240,16 +254,19 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
     )
   except Exception as e:
     agregar_log(f"❌ Error al descargar instalaciones: {e}")
+    barra_progreso.empty()
     return
 
   if res_inst.status_code != 200:
     agregar_log(f"❌ Error HTTP en instalaciones: {res_inst.status_code}")
+    barra_progreso.empty()
     return
 
   try:
     data = res_inst.json()
   except Exception as e:
     agregar_log(f"❌ Error al decodificar JSON: {e}")
+    barra_progreso.empty()
     return
 
   if isinstance(data, list):
@@ -267,6 +284,7 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
 
   if df.empty:
     agregar_log("❌ El dataset devuelto por la API está vacío.")
+    barra_progreso.empty()
     return
 
   agregar_log(
@@ -348,11 +366,15 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
   col_freg = next((c for c in ["fechaRegistro"] if c in df.columns), None)
   col_finst = next((c for c in ["fechaInstalacion"] if c in df.columns), None)
 
-  agregar_log("🔄 [Paso 2/3] Conectando a PostgreSQL para actualizar registros...")
+  barra_progreso.progress(
+      60, text="[3/3] Actualizando registros en PostgreSQL..."
+  )
+  agregar_log("🔄 [Paso 3/3] Conectando a PostgreSQL para actualizar registros...")
   try:
     engine_pg = obtener_motor_postgres()
   except Exception as e:
     agregar_log(f"❌ Error al conectar a PostgreSQL: {e}")
+    barra_progreso.empty()
     return
 
   query_update_directo = text("""
@@ -373,6 +395,7 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
     """)
 
   actualizados = 0
+  total_filas_df = len(df)
 
   try:
     with engine_pg.begin() as conn:
@@ -451,31 +474,54 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
         )
         actualizados += 1
 
+        # Actualizar barra de progreso dinámicamente cada 50 registros o al final
+        if actualizados % 50 == 0 or actualizados == total_filas_df:
+          progreso_actual = 60 + int(
+              (actualizados / max(1, total_filas_df)) * 40
+          )
+          barra_progreso.progress(
+              min(progreso_actual, 100),
+              text=(
+                  f"Actualizando registros en DB: {actualizados:,} /"
+                  f" {total_filas_df:,}"
+              ),
+          )
+
+    barra_progreso.progress(
+        100, text="¡Sincronización completada con éxito!"
+    )
+    time.sleep(1)
+    barra_progreso.empty()
+
     agregar_log(
-        f"✅ [Paso 3/3] ¡Sincronización completada! Se procesaron"
-        f" {actualizados:,} registros."
+        f"✅ ¡Sincronización completada! Se procesaron {actualizados:,}"
+        " registros."
     )
     st.session_state.ultimo_tiempo_ejecucion = time.time()
   except Exception as e:
+    barra_progreso.empty()
     agregar_log(f"❌ Error crítico en base de datos: {e}")
 
 
 # ==========================================
-# 5. VERIFICADOR AUTOMÁTICO DE TIEMPO DINÁMICO
+# 5. VERIFICADOR AUTOMÁTICO DE TIEMPO
 # ==========================================
-TIEMPO_INTERVALO = st.session_state.intervalo_minutos * 60
-tiempo_actual = time.time()
+if st.session_state.activar_automatico:
+  TIEMPO_INTERVALO = st.session_state.intervalo_minutos * 60
+  tiempo_actual = time.time()
 
-if (tiempo_actual - st.session_state.ultimo_tiempo_ejecucion) >= TIEMPO_INTERVALO:
-  agregar_log(
-      f"⏰ Se cumplió el intervalo de {st.session_state.intervalo_minutos}"
-      " minutos. Ejecutando sincronización automática..."
-  )
-  ejecutar_proceso_sincronizacion(es_automatico=True)
+  if (
+      tiempo_actual - st.session_state.ultimo_tiempo_ejecucion
+  ) >= TIEMPO_INTERVALO:
+    agregar_log(
+        f"⏰ Se cumplió el intervalo de {st.session_state.intervalo_minutos}"
+        " minutos. Ejecutando sincronización automática..."
+    )
+    ejecutar_proceso_sincronizacion(es_automatico=True)
 
 
 # ==========================================
-# 6. BARRA LATERAL (SIDEBAR CON SELECTOR DE TIEMPO)
+# 6. BARRA LATERAL (SIDEBAR CON TODO LO TUYO)
 # ==========================================
 with st.sidebar:
   st.markdown("<h2>⚙️ Configuración</h2>", unsafe_allow_html=True)
@@ -483,44 +529,69 @@ with st.sidebar:
 
   st.markdown("#### Ejecución Manual")
   if st.button("🚀 Ejecutar Ahora", type="primary", use_container_width=True):
-    with st.spinner("Sincronizando de forma directa... Por favor espera."):
-      ejecutar_proceso_sincronizacion(es_automatico=False)
+    ejecutar_proceso_sincronizacion(es_automatico=False)
     st.rerun()
 
   st.markdown("---")
-  st.markdown("#### ⏱️ Intervalo Automático")
-  minutos_elegidos = st.number_input(
-      "Minutos entre ejecuciones:",
-      min_value=1,
-      max_value=1440,
-      value=st.session_state.intervalo_minutos,
-      step=1,
-      key="input_intervalo_minutos",
+  st.markdown("#### ⏱️ Automatización por Tiempo")
+
+  # BOTÓN / INTERRUPTOR FÍSICO DE ACTIVACIÓN
+  estado_activacion = st.toggle(
+      "Activar ejecución automática",
+      value=st.session_state.activar_automatico,
+      key="toggle_activar_auto",
   )
 
-  if minutos_elegidos != st.session_state.intervalo_minutos:
-    st.session_state.intervalo_minutos = minutos_elegidos
-    agregar_log(
-        f"⚙️ Intervalo automático actualizado a {minutos_elegidos} minuto(s)."
-    )
+  if estado_activacion != st.session_state.activar_automatico:
+    st.session_state.activar_automatico = estado_activacion
+    if estado_activacion:
+      st.session_state.ultimo_tiempo_ejecucion = time.time()
+      agregar_log("🟢 Ejecución automática por tiempo ACTIVADA.")
+    else:
+      agregar_log("🔴 Ejecución automática por tiempo DESACTIVADA.")
     st.rerun()
+
+  # EXPANDER Y SELECTOR DEL PERIODO DE TIEMPO QUE PEDISTE
+  with st.expander("📅 Configurar Periodo de Tiempo", expanded=True):
+    minutos_elegidos = st.number_input(
+        "Minutos entre ejecuciones:",
+        min_value=1,
+        max_value=1440,
+        value=st.session_state.intervalo_minutos,
+        step=1,
+        key="input_intervalo_minutos",
+    )
+
+    if minutos_elegidos != st.session_state.intervalo_minutos:
+      st.session_state.intervalo_minutos = minutos_elegidos
+      agregar_log(
+          f"⚙️ Intervalo automático actualizado a {minutos_elegidos} minuto(s)."
+      )
+      st.rerun()
 
   st.markdown("---")
   st.markdown("#### Información del Sistema")
-  tiempo_restante = max(
-      0,
-      int(
-          (st.session_state.intervalo_minutos * 60)
-          - (time.time() - st.session_state.ultimo_tiempo_ejecucion)
-      ),
-  )
-  min_restantes = tiempo_restante // 60
-  seg_restantes = tiempo_restante % 60
-  st.markdown(
-      f"<p style='font-size:12px; color:#94a3b8;'>Próxima sincronización"
-      f" automática en aprox: <b>{min_restantes}m {seg_restantes}s</b></p>",
-      unsafe_allow_html=True,
-  )
+  if st.session_state.activar_automatico:
+    tiempo_restante = max(
+        0,
+        int(
+            (st.session_state.intervalo_minutos * 60)
+            - (time.time() - st.session_state.ultimo_tiempo_ejecucion)
+        ),
+    )
+    min_restantes = tiempo_restante // 60
+    seg_restantes = tiempo_restante % 60
+    st.markdown(
+        f"<p style='font-size:12px; color:#4ade80;'><b>ESTADO: ACTIVO</b><br>Próxima"
+        f" ejecución en: <b>{min_restantes}m {seg_restantes}s</b></p>",
+        unsafe_allow_html=True,
+    )
+  else:
+    st.markdown(
+        "<p style='font-size:12px; color:#f87171;'><b>ESTADO: APAGADO</b><br>El"
+        " temporizador está pausado.</p>",
+        unsafe_allow_html=True,
+    )
 
 # ==========================================
 # 7. TÍTULO PRINCIPAL
