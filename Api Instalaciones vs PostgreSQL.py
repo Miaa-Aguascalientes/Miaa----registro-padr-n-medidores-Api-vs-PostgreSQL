@@ -48,7 +48,7 @@ st.markdown(
             font-family: 'Courier New', Courier, monospace;
             padding: 15px;
             border-radius: 6px;
-            height: 250px;
+            height: 220px;
             overflow-y: scroll;
             font-size: 13px;
             line-height: 1.4;
@@ -59,7 +59,7 @@ st.markdown(
 )
 
 # ==========================================
-# 2. GESTIÓN DE ESTADOS Y CONTROL DE TIEMPO
+# 2. GESTIÓN DE ESTADOS Y HILO / TIEMPO SEGURO
 # ==========================================
 ZONA_MEXICO = ZoneInfo("America/Mexico_City")
 
@@ -71,12 +71,15 @@ if "logs" not in st.session_state:
 
 if "is_running_timer" not in st.session_state:
   st.session_state.is_running_timer = False
-
-if "ultimo_tiempo_ejecucion" not in st.session_state:
-  st.session_state.ultimo_tiempo_ejecucion = time.time()
-
+if "next_run_time" not in st.session_state:
+  st.session_state.next_run_time = None
 if "total_seconds_interval" not in st.session_state:
-  st.session_state.total_seconds_interval = 900  # 15 minutos por defecto
+  st.session_state.total_seconds_interval = 300  # 5 minutos por defecto
+
+if "sync_progress" not in st.session_state:
+  st.session_state.sync_progress = 0.0
+if "sync_status_text" not in st.session_state:
+  st.session_state.sync_status_text = "Sistema en reposo."
 
 
 def agregar_log(mensaje):
@@ -84,6 +87,13 @@ def agregar_log(mensaje):
   st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
   if len(st.session_state.logs) > 150:
     st.session_state.logs.pop()
+
+
+def actualizar_estado_proceso(progreso, texto, log_msj=None):
+  st.session_state.sync_progress = float(progreso)
+  st.session_state.sync_status_text = str(texto)
+  if log_msj:
+    agregar_log(log_msj)
 
 
 # ==========================================
@@ -182,26 +192,28 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. PROCESO DE SINCRONIZACIÓN CON PROGRESO
+# 4. PROCESO DE SINCRONIZACIÓN DIRECTO Y SEGURO
 # ==========================================
 def ejecutar_proceso_sincronizacion(es_automatico=False):
   tipo_ejec = "automático (periódico)" if es_automatico else "manual"
-  agregar_log(
-      f"🚀 Iniciando proceso de sincronización ({tipo_ejec}) con la API..."
+  actualizar_estado_proceso(
+      0.05,
+      "Iniciando sincronización...",
+      f"🚀 Iniciando proceso de sincronización ({tipo_ejec}) con la API...",
   )
-
-  barra_progreso = st.progress(0, text="Iniciando sincronización...")
 
   try:
     usuario = st.secrets["api"]["usuario"]
     password = st.secrets["api"]["password"]
   except Exception as e:
-    agregar_log(f"❌ Error leyendo st.secrets: {e}")
-    barra_progreso.empty()
+    actualizar_estado_proceso(0.0, "Error en secretos", f"❌ Error leyendo st.secrets: {e}")
     return
 
-  barra_progreso.progress(10, text="[1/3] Conectando al login de MIAA...")
-  agregar_log("🔄 [Paso 1/3] Conectando al login de MIAA...")
+  actualizar_estado_proceso(
+      0.15,
+      "Conectando al login de MIAA...",
+      "🔄 [Paso 1/3] Conectando al login de MIAA...",
+  )
   try:
     res_login = requests.post(
         url_login,
@@ -210,13 +222,11 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
         timeout=20,
     )
   except Exception as e:
-    agregar_log(f"❌ Error de red al conectar al login: {e}")
-    barra_progreso.empty()
+    actualizar_estado_proceso(0.0, "Error de red en login", f"❌ Error de red al conectar al login: {e}")
     return
 
   if res_login.status_code != 200:
-    agregar_log(f"❌ Falló la autenticación. Código: {res_login.status_code}")
-    barra_progreso.empty()
+    actualizar_estado_proceso(0.0, f"Error HTTP {res_login.status_code}", f"❌ Falló la autenticación. Código: {res_login.status_code}")
     return
 
   try:
@@ -227,15 +237,15 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
     token = None
 
   if not token:
-    agregar_log("❌ No se pudo extraer el token de acceso.")
-    barra_progreso.empty()
+    actualizar_estado_proceso(0.0, "Token no encontrado", "❌ No se pudo extraer el token de acceso.")
     return
 
-  agregar_log("✅ Autenticación exitosa. Descargando instalaciones...")
-
-  barra_progreso.progress(
-      35, text="[2/3] Descargando registros de instalaciones..."
+  actualizar_estado_proceso(
+      0.30,
+      "Descargando registros de instalaciones...",
+      "✅ Autenticación exitosa. Descargando registros de instalaciones...",
   )
+
   try:
     res_inst = requests.get(
         url_instalaciones,
@@ -246,20 +256,17 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
         timeout=45,
     )
   except Exception as e:
-    agregar_log(f"❌ Error al descargar instalaciones: {e}")
-    barra_progreso.empty()
+    actualizar_estado_proceso(0.0, "Error descargando instalaciones", f"❌ Error al descargar instalaciones: {e}")
     return
 
   if res_inst.status_code != 200:
-    agregar_log(f"❌ Error HTTP en instalaciones: {res_inst.status_code}")
-    barra_progreso.empty()
+    actualizar_estado_proceso(0.0, f"Error HTTP {res_inst.status_code}", f"❌ Error HTTP en instalaciones: {res_inst.status_code}")
     return
 
   try:
     data = res_inst.json()
   except Exception as e:
-    agregar_log(f"❌ Error al decodificar JSON: {e}")
-    barra_progreso.empty()
+    actualizar_estado_proceso(0.0, "Error decodificando JSON", f"❌ Error al decodificar JSON: {e}")
     return
 
   if isinstance(data, list):
@@ -276,12 +283,13 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
     df = pd.DataFrame()
 
   if df.empty:
-    agregar_log("❌ El dataset devuelto por la API está vacío.")
-    barra_progreso.empty()
+    actualizar_estado_proceso(0.0, "Dataset vacío", "❌ El dataset devuelto por la API está vacío.")
     return
 
-  agregar_log(
-      f"📦 Registros obtenidos de la API: {len(df):,}. Mapeando campos..."
+  actualizar_estado_proceso(
+      0.50,
+      f"Procesando {len(df):,} registros de la API...",
+      f"📦 Registros obtenidos de la API: {len(df):,}. Mapeando campos...",
   )
 
   cols_a_remover = [
@@ -359,15 +367,15 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
   col_freg = next((c for c in ["fechaRegistro"] if c in df.columns), None)
   col_finst = next((c for c in ["fechaInstalacion"] if c in df.columns), None)
 
-  barra_progreso.progress(
-      60, text="[3/3] Actualizando registros en PostgreSQL..."
+  actualizar_estado_proceso(
+      0.65,
+      "Actualizando registros en PostgreSQL...",
+      "🔄 [Paso 3/3] Conectando a PostgreSQL para actualizar registros...",
   )
-  agregar_log("🔄 [Paso 3/3] Conectando a PostgreSQL para actualizar registros...")
   try:
     engine_pg = obtener_motor_postgres()
   except Exception as e:
-    agregar_log(f"❌ Error al conectar a PostgreSQL: {e}")
-    barra_progreso.empty()
+    actualizar_estado_proceso(0.0, f"Error PG: {e}", f"❌ Error al conectar a PostgreSQL: {e}")
     return
 
   query_update_directo = text("""
@@ -468,47 +476,26 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
         actualizados += 1
 
         if actualizados % 50 == 0 or actualizados == total_filas_df:
-          progreso_actual = 60 + int(
-              (actualizados / max(1, total_filas_df)) * 40
+          progreso_calc = 0.65 + (
+              (actualizados / max(1, total_filas_df)) * 0.35
           )
-          barra_progreso.progress(
-              min(progreso_actual, 100),
-              text=(
-                  f"Actualizando registros en DB: {actualizados:,} /"
-                  f" {total_filas_df:,}"
-              ),
+          st.session_state.sync_progress = float(progreso_calc)
+          st.session_state.sync_status_text = (
+              f"Actualizando registros: {actualizados:,} /"
+              f" {total_filas_df:,}"
           )
 
-    barra_progreso.progress(
-        100, text="¡Sincronización completada con éxito!"
+    actualizar_estado_proceso(
+        1.0,
+        "¡Sincronización completada con éxito!",
+        f"✅ ¡Sincronización completada! Se procesaron {actualizados:,} registros.",
     )
-    time.sleep(1)
-    barra_progreso.empty()
-
-    agregar_log(
-        f"✅ ¡Sincronización completada! Se procesaron {actualizados:,}"
-        " registros."
-    )
-    st.session_state.ultimo_tiempo_ejecucion = time.time()
   except Exception as e:
-    barra_progreso.empty()
-    agregar_log(f"❌ Error crítico en base de datos: {e}")
+    actualizar_estado_proceso(0.0, f"Error en DB: {e}", f"❌ Error crítico en base de datos: {e}")
 
 
 # ==========================================
-# 5. VERIFICADOR AUTOMÁTICO DE TIEMPO
-# ==========================================
-if st.session_state.is_running_timer:
-  tiempo_actual = time.time()
-  if (
-      tiempo_actual - st.session_state.ultimo_tiempo_ejecucion
-  ) >= st.session_state.total_seconds_interval:
-    agregar_log("⏰ Intervalo de tiempo cumplido. Ejecutando proceso periódico...")
-    ejecutar_proceso_sincronizacion(es_automatico=True)
-
-
-# ==========================================
-# 6. BARRA LATERAL (SIDEBAR CON SELECTOR Y BOTONES)
+# 5. BARRA LATERAL (SIDEBAR)
 # ==========================================
 with st.sidebar:
   st.markdown("<h2>⚙️ Configuración</h2>", unsafe_allow_html=True)
@@ -516,8 +503,11 @@ with st.sidebar:
 
   st.markdown("#### Ejecución Manual")
   if st.button("🚀 Ejecutar Ahora", type="primary", use_container_width=True):
-    ejecutar_proceso_sincronizacion(es_automatico=False)
-    st.rerun()
+    if st.session_state.sync_progress > 0 and st.session_state.sync_progress < 1.0:
+      st.warning("Ya hay un proceso en ejecución.")
+    else:
+      ejecutar_proceso_sincronizacion(es_automatico=False)
+      st.rerun()
 
   st.markdown("---")
   st.markdown("#### Ejecución Periódica")
@@ -542,63 +532,111 @@ with st.sidebar:
 
   if btn_iniciar:
     st.session_state.is_running_timer = True
-    st.session_state.ultimo_tiempo_ejecucion = time.time()
+    st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
+        seconds=st.session_state.total_seconds_interval
+    )
     agregar_log(
-        f"🟢 Temporizador automático ACTIVADO ({intervalo_sel.lower()})."
+        f"⏱️ Temporizador automático activado ({intervalo_sel.lower()})."
     )
     st.success("¡Temporizador activo!")
     st.rerun()
 
   if btn_parar:
     st.session_state.is_running_timer = False
-    agregar_log("🔴 Temporizador automático DETENIDO.")
+    st.session_state.next_run_time = None
+    agregar_log("🛑 Temporizador automático detenido.")
     st.warning("Temporizador detenido.")
     st.rerun()
 
-  st.markdown("---")
-  st.markdown("#### Estado del Temporizador")
-  if st.session_state.is_running_timer:
-    restante = max(
-        0,
-        int(
-            st.session_state.total_seconds_interval
-            - (time.time() - st.session_state.ultimo_tiempo_ejecucion)
-        ),
-    )
-    mins, secs = divmod(restante, 60)
-    st.markdown(
-        f"<p style='font-size:12px; color:#4ade80;'><b>ESTADO: ACTIVO</b><br>Próxima"
-        f" ejecución en: <b>{mins:02d}:{secs:02d}</b></p>",
-        unsafe_allow_html=True,
-    )
-  else:
-    st.markdown(
-        "<p style='font-size:12px; color:#f87171;'><b>ESTADO: DETENIDO</b><br>El"
-        " temporizador está apagado.</p>",
-        unsafe_allow_html=True,
-    )
-
 # ==========================================
-# 7. TÍTULO PRINCIPAL
+# 6. TÍTULO PRINCIPAL
 # ==========================================
 st.markdown(
     "<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True
 )
 st.markdown("---")
 
-# ==========================================
-# 8. CONSOLA DE REGISTROS
-# ==========================================
-st.markdown("#### 🖥️ Consola de Registros en Tiempo Real")
-logs_html = "<br>".join(st.session_state.logs)
-st.markdown(
-    f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
-)
-
-st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
 # ==========================================
-# 9. INDICADORES Y PESTAÑAS
+# 7. FRAGMENTO REACTIVO EN VIVO (SEGUNDERO Y BARRAS DE PROGRESO)
+# ==========================================
+@st.fragment(run_every=0.5)
+def renderizar_consola_y_progreso():
+  # Verificador del temporizador automático
+  if st.session_state.is_running_timer and st.session_state.next_run_time:
+    ahora_mx = datetime.now(ZONA_MEXICO)
+    if ahora_mx >= st.session_state.next_run_time:
+      ejecutar_proceso_sincronizacion(es_automatico=True)
+      st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
+          seconds=st.session_state.total_seconds_interval
+      )
+
+  # Segundero / Cuenta regresiva visual
+  if st.session_state.is_running_timer and st.session_state.next_run_time:
+    ahora_mx = datetime.now(ZONA_MEXICO)
+    restante = max(
+        0, int((st.session_state.next_run_time - ahora_mx).total_seconds())
+    )
+    total = st.session_state.total_seconds_interval
+    progreso_timer = min(1.0, max(0.0, (total - restante) / total))
+    mins, secs = divmod(restante, 60)
+    st.markdown(
+        f"<p style='font-size: 13px; color: #38bdf8; font-weight: bold;"
+        f" margin-bottom: 2px;'>⏱️ Próxima ejecución automática en:"
+        f" {mins:02d}:{secs:02d}</p>",
+        unsafe_allow_html=True,
+    )
+    st.progress(progreso_timer)
+  else:
+    st.markdown(
+        "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
+        " margin-bottom: 2px;'>⏸️ Temporizador inactivo. Usa 'INICIAR' en la"
+        " barra lateral.</p>",
+        unsafe_allow_html=True,
+    )
+    st.progress(0.0)
+
+  # Consola en vivo
+  st.markdown("#### 🖥️ Consola de Registros en Tiempo Real")
+  logs_html = "<br>".join(st.session_state.logs)
+  st.markdown(
+      f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
+  )
+
+  st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+  current_prog = st.session_state.sync_progress
+  current_text = st.session_state.sync_status_text
+
+  if 0.0 < current_prog < 1.0:
+    st.markdown(
+        f"<p style='font-size: 13px; color: #f59e0b; font-weight: bold;"
+        f" margin-bottom: 4px;'>🔄 Estado de Inserción: {current_text}"
+        f" ({int(current_prog * 100)}%)</p>",
+        unsafe_allow_html=True,
+    )
+  elif current_prog >= 1.0:
+    st.markdown(
+        f"<p style='font-size: 13px; color: #22c55e; font-weight: bold;"
+        f" margin-bottom: 4px;'>✅ Estado de Inserción: {current_text}"
+        " (100%)</p>",
+        unsafe_allow_html=True,
+    )
+  else:
+    st.markdown(
+        f"<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
+        f" margin-bottom: 4px;'>💤 Estado de Inserción: {current_text}</p>",
+        unsafe_allow_html=True,
+    )
+
+  st.progress(current_prog)
+
+
+renderizar_consola_y_progreso()
+
+st.markdown("---")
+
+# ==========================================
+# 8. INDICADORES Y PESTAÑAS
 # ==========================================
 total_registros_db = obtener_total_registros()
 total_con_serie = obtener_total_con_serie()
