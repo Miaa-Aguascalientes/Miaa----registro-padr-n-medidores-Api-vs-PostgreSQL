@@ -292,7 +292,7 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE ESTRICTO Y EJECUCIÓN CON PROGRESO VIVO
+# 4. FUNCIÓN DE CRUCE ESTRICTO Y EJECUCIÓN CON PROGRESO VIVO EN CONSOLA
 # ==========================================
 def procesar_cruce_datos(
     df_conmedidor_pg, df_filtrado, registrar_auditoria=False
@@ -504,10 +504,18 @@ def procesar_cruce_datos(
 
 
 def ejecutar_sincronizacion_automatica(
-    barra_progreso_placeholder=None, texto_estado_placeholder=None
+    barra_progreso_placeholder=None,
+    texto_estado_placeholder=None,
+    consola_placeholder=None,
 ):
   def actualizar_progreso(valor_pct, mensaje):
     agregar_log(mensaje)
+    # Refrescar la consola en tiempo real en cada paso
+    if consola_placeholder is not None:
+      logs_html = "<br>".join(st.session_state.logs)
+      consola_placeholder.markdown(
+          f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
+      )
     if barra_progreso_placeholder is not None:
       barra_progreso_placeholder.progress(
           valor_pct,
@@ -517,12 +525,12 @@ def ejecutar_sincronizacion_automatica(
       texto_estado_placeholder.markdown(
           f"🔄 **{mensaje}** ({int(valor_pct * 100)}%)"
       )
+    time.sleep(0.15)  # Pausa imperceptible para asegurar renderizado visual
 
-  # Paso 1: Inicio de conexión a la API (20%)
+  # Paso 1: Inicio de conexión a la API (15%)
   actualizar_progreso(
-      0.20,
-      "[PASO 1/5] Iniciando sincronización. Conectando con API de"
-      " instalaciones...",
+      0.15,
+      "[PASO 1/6] Iniciando ciclo. Conectando con API de instalaciones...",
   )
   df_filtrado = cargar_datos_api()
 
@@ -534,21 +542,22 @@ def ejecutar_sincronizacion_automatica(
 
   total_descargados = len(df_filtrado)
   actualizar_progreso(
-      0.40,
-      f"[PASO 2/5] API OK. Se descargaron {total_descargados:,} registros."
-      " Preparando motor PostgreSQL...",
+      0.30,
+      f"[PASO 2/6] API OK. Se descargaron {total_descargados:,} registros de"
+      " instalaciones.",
   )
 
-  # Paso 3: Conexión y lectura progresiva de PostgreSQL (60%)
+  # Paso 3: Conexión a PostgreSQL (50%)
   try:
     actualizar_progreso(
-        0.50,
-        "[PASO 3/5] Conectando a PostgreSQL y cargando tabla completa de"
-        " usuarios...",
+        0.50, "[PASO 3/6] Conectando al motor PostgreSQL..."
     )
     engine_pg = obtener_motor_postgres()
 
-    # Lectura optimizada por chunks o directa con reporte detallado inmediato
+    actualizar_progreso(
+        0.65,
+        "[PASO 4/6] Leyendo tabla completa de usuarios desde PostgreSQL...",
+    )
     df_conmedidor_pg = pd.read_sql(
         'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg
     )
@@ -559,8 +568,8 @@ def ejecutar_sincronizacion_automatica(
   if not df_conmedidor_pg.empty:
     total_registros_pg = len(df_conmedidor_pg)
     actualizar_progreso(
-        0.70,
-        f"[PASO 4/5] PostgreSQL leído ({total_registros_pg:,} registros)."
+        0.80,
+        f"[PASO 5/6] PostgreSQL leído ({total_registros_pg:,} registros)."
         " Ejecutando cruce estricto de datos...",
     )
 
@@ -569,8 +578,8 @@ def ejecutar_sincronizacion_automatica(
     )
 
     actualizar_progreso(
-        0.85,
-        "[PASO 5/5] Cruce completado. Guardando y actualizando registros en"
+        0.92,
+        "[PASO 6/6] Cruce completado. Guardando y actualizando registros en"
         " PostgreSQL...",
     )
 
@@ -790,12 +799,25 @@ st.markdown("#### 🔄 Estado y Progreso del Sistema")
 estado_ejecucion_placeholder = st.empty()
 barra_progreso_placeholder = st.empty()
 
+# Consola y Limpieza Masiva (Definimos el placeholder de consola antes de usarlo)
+col_consola, col_limpieza = st.columns([1, 1], gap="medium")
+
+with col_consola:
+  st.markdown("#### 🖥️ Consola de Registros del Sistema")
+  consola_placeholder = st.empty()
+  logs_html = "<br>".join(st.session_state.logs)
+  consola_placeholder.markdown(
+      f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
+  )
+
 # Lógica del Temporizador y Cuenta Regresiva (Segundero y su barra de progreso de espera)
 if st.session_state.is_running and st.session_state.next_run_time:
   ahora = datetime.now(ZONA_MEXICO)
   if ahora >= st.session_state.next_run_time:
     ejecutar_sincronizacion_automatica(
-        barra_progreso_placeholder, estado_ejecucion_placeholder
+        barra_progreso_placeholder,
+        estado_ejecucion_placeholder,
+        consola_placeholder,
     )
     sig_tiempo, _ = calcular_siguiente_tiempo_reloj(
         st.session_state.intervalo_minutos_sel
@@ -851,16 +873,6 @@ else:
   barra_progreso_placeholder.progress(0, text="Listo para iniciar temporizador...")
 
 st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
-
-# Consola y Limpieza Masiva
-col_consola, col_limpieza = st.columns([1, 1], gap="medium")
-
-with col_consola:
-  st.markdown("#### 🖥️ Consola de Registros del Sistema")
-  logs_html = "<br>".join(st.session_state.logs)
-  st.markdown(
-      f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
-  )
 
 with col_limpieza:
   st.markdown("#### &nbsp;")
@@ -973,7 +985,7 @@ with tab1:
                 <div class="metric-card">
                     <div class="metric-content">
                         <div class="metric-title">Estado de Carga</div>
-                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Optimizado (Progreso en Vivo)</div>
+                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Consola en Vivo (Progreso Real)</div>
                     </div>
                 </div>
             """,
