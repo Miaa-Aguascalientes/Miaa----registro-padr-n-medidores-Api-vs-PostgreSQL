@@ -149,7 +149,6 @@ def cargar_datos_api():
               df = pd.DataFrame([data])
 
           if not df.empty:
-            # Eliminar columnas de fotos/imágenes
             cols_a_remover = [
                 c
                 for c in df.columns
@@ -160,7 +159,6 @@ def cargar_datos_api():
             ]
             df = df.drop(columns=cols_a_remover, errors="ignore")
 
-            # CREACIÓN OFICIAL DEL CAMPO Predio_Viv (Incluyendo unidades en 0 o vacías)
             col_api_predio = next(
                 (
                     c
@@ -205,7 +203,6 @@ def cargar_datos_api():
 
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-              # Mover la columna Predio_Viv justo a la izquierda del campo predio
               if "predio" in df.columns:
                 cols = list(df.columns)
                 cols.remove("Predio_Viv")
@@ -233,7 +230,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   if df_api_merge.empty or df_conmedidor_pg.empty:
     return df_conmedidor_pg
 
-  # 1. Preparar clave para Predio_Viv
   if "Predio_Viv" in df_api_merge.columns:
     df_api_merge["key_predio"] = (
         df_api_merge["Predio_Viv"].astype(str).str.strip()
@@ -241,7 +237,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   else:
     df_api_merge["key_predio"] = ""
 
-  # 2. Preparar clave para numeroCliente en la API
   col_api_cliente = next(
       (
           c
@@ -263,7 +258,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   else:
     df_api_merge["key_cliente"] = ""
 
-  # Diccionarios de mapeo por Predio
   dict_api_serie_p = dict(
       zip(df_api_merge["key_predio"], df_api_merge.get("serie", ""))
   )
@@ -286,7 +280,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       zip(df_api_merge["key_predio"], df_api_merge.get("fechaInstalacion", ""))
   )
 
-  # Diccionarios de mapeo por Cliente
   dict_api_serie_c = dict(
       zip(df_api_merge["key_cliente"], df_api_merge.get("serie", ""))
   )
@@ -329,7 +322,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   else:
     dict_api_tipo_p, dict_api_tipo_c = {}, {}
 
-  # Identificar columnas clave en PostgreSQL
   col_pg_predio = next(
       (
           c
@@ -358,7 +350,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       else ""
   )
 
-  # Lógica de cruce dual: Primero busca por Predio, si no encuentra/está vacío, busca por Cliente
   def obtener_valor(row, dict_p, dict_c, default_val=""):
     kp = row["key_predio"]
     kc = row["key_cliente"]
@@ -510,17 +501,48 @@ def ejecutar_sincronizacion_automatica():
 
 
 # ==========================================
-# 5. GESTIÓN DE ESTADO PARA EL TEMPORIZADOR
+# 5. FUNCIÓN AUXILIAR PARA CALCULAR EL SIGUIENTE TIEMPO EN EL RELOJ
+# ==========================================
+def calcular_siguiente_tiempo_reloj(minutos_intervalo):
+  ahora = datetime.now()
+  minuto_actual = ahora.minute
+  segundo_actual = ahora.second
+
+  # Calcular cuántos minutos faltan para el siguiente múltiplo exacto
+  residuo = minuto_actual % minutos_intervalo
+  minutos_faltantes = (
+      minutos_intervalo - residuo
+      if residuo != 0
+      else (0 if segundo_actual == 0 else minutos_intervalo)
+  )
+
+  if minutos_faltantes == 0 and segundo_actual > 0:
+    minutos_faltantes = minutos_intervalo
+
+  # Siguiente ejecución exacta alineada al reloj
+  siguiente_tiempo = (
+      ahora.replace(second=0, microsecond=0)
+      + timedelta(minutes=minutos_faltantes)
+  )
+  total_segundos_hasta_siguiente = (
+      siguiente_tiempo - ahora
+  ).total_seconds()
+
+  return siguiente_tiempo, int(total_segundos_hasta_siguiente)
+
+
+# ==========================================
+# 6. GESTIÓN DE ESTADO PARA EL TEMPORIZADOR
 # ==========================================
 if "is_running" not in st.session_state:
   st.session_state.is_running = False
 if "next_run_time" not in st.session_state:
   st.session_state.next_run_time = None
-if "total_seconds_interval" not in st.session_state:
-  st.session_state.total_seconds_interval = 300
+if "intervalo_minutos_sel" not in st.session_state:
+  st.session_state.intervalo_minutos_sel = 5
 
 # ==========================================
-# 6. TÍTULO Y PANEL DE CONFIGURACIÓN DE TIEMPO
+# 7. TÍTULO Y PANEL DE CONFIGURACIÓN DE TIEMPO
 # ==========================================
 st.markdown(
     "<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True
@@ -537,16 +559,16 @@ with st.container(border=True):
     )
   with c2:
     opciones_intervalo = {
-        "Cada 1 minuto": 60,
-        "Cada 5 minutos": 300,
-        "Cada 15 minutos": 900,
-        "Cada 30 minutos": 1800,
-        "Cada hora": 3600,
+        "Cada 1 minuto": 1,
+        "Cada 5 minutos": 5,
+        "Cada 15 minutos": 15,
+        "Cada 30 minutos": 30,
+        "Cada hora": 60,
     }
     intervalo_sel = st.selectbox(
         "Intervalo", list(opciones_intervalo.keys()), label_visibility="collapsed"
     )
-    total_segundos = opciones_intervalo[intervalo_sel]
+    minutos_seleccionados = opciones_intervalo[intervalo_sel]
   with c3:
     btn_iniciar = st.button("INICIAR", type="primary", use_container_width=True)
   with c4:
@@ -554,14 +576,20 @@ with st.container(border=True):
 
 if btn_iniciar:
   st.session_state.is_running = True
-  st.session_state.total_seconds_interval = total_segundos
-  st.session_state.next_run_time = datetime.now() + timedelta(
-      seconds=total_segundos
-  )
+  st.session_state.intervalo_minutos_sel = minutos_seleccionados
+
+  # Sincronizar de inmediato con el reloj del sistema
+  sig_tiempo, _ = calcular_siguiente_tiempo_reloj(minutos_seleccionados)
+  st.session_state.next_run_time = sig_tiempo
+
   agregar_log(
-      f"Temporizador iniciado. Próxima ejecución en {intervalo_sel.lower()}."
+      f"Temporizador sincronizado al reloj. Próxima ejecución programada para"
+      f" las {sig_tiempo.strftime('%H:%M:%S')}."
   )
-  st.success("¡Temporizador iniciado correctamente!")
+  st.success(
+      f"¡Temporizador iniciado! Siguiente ejecución a las"
+      f" {sig_tiempo.strftime('%H:%M:%S')}."
+  )
   st.rerun()
 
 if btn_parar:
@@ -575,7 +603,7 @@ st.markdown("---")
 
 
 # ==========================================
-# 7. FRAGMENTO AISLADO CON BARRA DE PROGRESO, CONTADOR Y CONSOLA
+# 8. FRAGMENTO AISLADO CON BARRA DE PROGRESO, CONTADOR Y CONSOLA
 # ==========================================
 @st.fragment(run_every=1)
 def renderizar_progreso_y_consola():
@@ -583,18 +611,22 @@ def renderizar_progreso_y_consola():
     ahora = datetime.now()
     if ahora >= st.session_state.next_run_time:
       ejecutar_sincronizacion_automatica()
-      st.session_state.next_run_time = datetime.now() + timedelta(
-          seconds=st.session_state.total_seconds_interval
+      # Reprogramar para el siguiente múltiplo de reloj exacto
+      sig_tiempo, _ = calcular_siguiente_tiempo_reloj(
+          st.session_state.intervalo_minutos_sel
       )
+      st.session_state.next_run_time = sig_tiempo
 
   if st.session_state.is_running and st.session_state.next_run_time:
     ahora = datetime.now()
     restante = (st.session_state.next_run_time - ahora).total_seconds()
     restante = max(0, int(restante))
 
-    total_intervalo = st.session_state.total_seconds_interval
-    transcurrido = total_intervalo - restante
-    progreso = min(1.0, max(0.0, transcurrido / total_intervalo))
+    # Intervalo total en segundos desde el inicio del bloque actual
+    min_sel = st.session_state.intervalo_minutos_sel
+    total_intervalo_secs = min_sel * 60
+    transcurrido = total_intervalo_secs - restante
+    progreso = min(1.0, max(0.0, transcurrido / total_intervalo_secs))
 
     mins, secs = divmod(restante, 60)
     tiempo_formateado = f"{mins:02d}:{secs:02d}"
@@ -602,7 +634,8 @@ def renderizar_progreso_y_consola():
     st.markdown(
         f"<p style='font-size: 13px; color: #38bdf8; font-weight: bold;"
         f" margin-bottom: 4px;'>⏱️ Próxima actualización automática en:"
-        f" {tiempo_formateado}</p>",
+        f" {tiempo_formateado} (Alineado al reloj a las"
+        f" {st.session_state.next_run_time.strftime('%H:%M:%S')})</p>",
         unsafe_allow_html=True,
     )
     st.progress(progreso)
@@ -610,7 +643,7 @@ def renderizar_progreso_y_consola():
     st.markdown(
         "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
         " margin-bottom: 4px;'>⏸️ Temporizador inactivo. Haz clic en INICIAR"
-        " para activar el ciclo automático.</p>",
+        " para activar el ciclo automático alineado al reloj.</p>",
         unsafe_allow_html=True,
     )
     st.progress(0.0)
@@ -627,7 +660,7 @@ renderizar_progreso_y_consola()
 st.markdown("---")
 
 # ==========================================
-# 8. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
+# 9. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
 # ==========================================
 tab1, tab2 = st.tabs([
     "🚰 Panel Principal y Gestión",
@@ -687,9 +720,6 @@ with tab1:
 
     st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
-    # ==========================================
-    # LIMPIEZA MASIVA DE CAMPOS (SIN BORRAR FILAS)
-    # ==========================================
     with st.container(border=True):
       st.markdown(
           "#### 🧹 Limpieza Masiva de Campos (Sin eliminar registros)"
