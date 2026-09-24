@@ -46,7 +46,7 @@ st.markdown(
             font-family: 'Courier New', Courier, monospace;
             padding: 15px;
             border-radius: 6px;
-            height: 200px;
+            height: 220px;
             overflow-y: scroll;
             font-size: 13px;
             line-height: 1.4;
@@ -73,7 +73,7 @@ def agregar_log(mensaje):
 
 
 # ==========================================
-# 3. CONEXIONES Y CONSULTAS OPTIMIZADAS (SQL)
+# 3. CONEXIONES Y CONSULTAS (SQL Y API)
 # ==========================================
 url_login = "https://prelec.miaa.mx/auth/v2/login"
 url_instalaciones = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones"
@@ -109,7 +109,7 @@ def cargar_pagina_usuarios_db(limit=50, offset=0):
     return pd.read_sql(
         query, con=engine_pg, params={"lim": limit, "off": offset}
     )
-  except Exception as e:
+  except Exception:
     return pd.DataFrame()
 
 
@@ -217,12 +217,12 @@ def cargar_datos_api():
 
           return df
     return pd.DataFrame()
-  except Exception as e:
+  except Exception:
     return pd.DataFrame()
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE SECUENCIAL EN DOS PASOS (PREDIO_VIV -> CLIENTE)
+# 4. FUNCIÓN DE CRUCE SECUENCIAL EN DOS PASOS
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   df_api_merge = df_filtrado.copy()
@@ -233,7 +233,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     )
     return df_conmedidor_pg
 
-  # 1. Preparar llaves de la API
   if "Predio_Viv" in df_api_merge.columns:
     df_api_merge["key_predio"] = (
         df_api_merge["Predio_Viv"].astype(str).str.strip()
@@ -267,7 +266,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       " listos."
   )
 
-  # Diccionarios exclusivos para el PRIMER JOIN (Predio_Viv)
   dict_api_serie_p = dict(
       zip(df_api_merge["key_predio"], df_api_merge.get("serie", ""))
   )
@@ -290,7 +288,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       zip(df_api_merge["key_predio"], df_api_merge.get("fechaInstalacion", ""))
   )
 
-  # Diccionarios exclusivos para el SEGUNDO JOIN (Cliente)
   dict_api_serie_c = dict(
       zip(df_api_merge["key_cliente"], df_api_merge.get("serie", ""))
   )
@@ -333,7 +330,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   else:
     dict_api_tipo_p, dict_api_tipo_c = {}, {}
 
-  # 2. Preparar llaves de PostgreSQL
   col_pg_predio = next(
       (
           c
@@ -365,13 +361,11 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   matches_predio = 0
   matches_cliente = 0
 
-  # 3. Lógica secuencial estricta (Paso 1: Predio_Viv -> Paso 2: Cliente)
   def aplicar_cruce_secuencial(row, dict_p, dict_c, default_val):
     nonlocal matches_predio, matches_cliente
     kp = row["key_predio"]
     kc = row["key_cliente"]
 
-    # PRIMER JOIN: Buscar estrictamente por Predio_Viv
     if kp and kp.lower() not in ["none", "nan", "", "nat"]:
       if kp in dict_p:
         val = dict_p[kp]
@@ -379,7 +373,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
           matches_predio += 1
           return val
 
-    # SEGUNDO JOIN: Si no encontró por Predio_Viv, buscar por Cliente
     if kc and kc.lower() not in ["none", "nan", "", "nat"]:
       if kc in dict_c:
         val = dict_c[kc]
@@ -394,7 +387,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       " secuencialmente..."
   )
 
-  # Reseteamos contadores para esta ejecución
   matches_predio = 0
   matches_cliente = 0
 
@@ -470,7 +462,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       errors="coerce",
   )
 
-  # Nota: Como las filas se evalúan columna por columna, dividimos los contadores de coincidencias acumuladas entre las columnas procesadas para reflejar el balance real en consola.
   real_matches_p = matches_predio // 8
   real_matches_c = matches_cliente // 8
 
@@ -487,24 +478,24 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
 
 def ejecutar_sincronizacion_automatica():
   agregar_log(
-      "🔄 Iniciando ciclo: Intentando conectar y autenticar con la API de MIAA..."
+      "🔄 [CICLO INICIADO] Conectando a la API de MIAA para descarga de"
+      " instalaciones..."
   )
   df_filtrado = cargar_datos_api()
 
   if df_filtrado.empty:
     agregar_log(
-        "❌ Error: No se pudo conectar de manera correcta a la API o no devolvió"
-        " datos."
+        "❌ [ERROR API] No se pudo obtener respuesta o datos válidos de la API."
     )
     return False
 
   agregar_log(
-      "✅ Conexión a la API establecida de manera correcta. Registros"
-      f" obtenidos de la API: {len(df_filtrado):,}."
+      f"✅ [API OK] Se descargaron {len(df_filtrado):,} registros de la API"
+      " correctamente."
   )
   agregar_log(
-      "🔄 Se procede a la actualización de datos de PostgreSQL (cruce y"
-      " almacenamiento)..."
+      "🔄 [PG CONEXIÓN] Extrayendo registros de PostgreSQL para realizar el"
+      " cruce..."
   )
 
   try:
@@ -513,16 +504,19 @@ def ejecutar_sincronizacion_automatica():
         'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg
     )
   except Exception as ex:
-    agregar_log(f"❌ Error al conectar a la base de datos PostgreSQL: {ex}")
+    agregar_log(f"❌ [ERROR PG] Falló la lectura de PostgreSQL: {ex}")
     return False
 
   if not df_conmedidor_pg.empty:
-    total_predios = len(df_conmedidor_pg)
+    total_registros = len(df_conmedidor_pg)
     agregar_log(
-        f"Procesando cruce dual de información (Predio / Cliente) para"
-        f" {total_predios:,} registros en PostgreSQL..."
+        f"⚙️ Procesando actualización masiva para {total_registros:,}"
+        " registros locales..."
     )
+
     df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
+
+    agregar_log("💾 [PG ESCRITURA] Guardando cambios actualizados en la tabla...")
     try:
       df_actualizado.to_sql(
           "usuarios_miaa_conmedidor",
@@ -532,27 +526,26 @@ def ejecutar_sincronizacion_automatica():
           index=False,
       )
       agregar_log(
-          f"✅ ¡Actualización completada con éxito! Se han actualizado"
-          f" {total_predios:,} datos/registros en la tabla de PostgreSQL."
+          f"🎉 [CICLO EXITOSO] Se actualizaron {total_registros:,} registros en"
+          " la base de datos."
       )
       return True
     except Exception as ex:
-      agregar_log(f"❌ Error al guardar los datos actualizados en PG: {ex}")
+      agregar_log(f"❌ [ERROR ESCRITURA PG] No se pudo guardar en SQL: {ex}")
       return False
   else:
-    agregar_log("⚠️ Advertencia: La tabla en PostgreSQL está vacía.")
+    agregar_log("⚠️ [AVISO] La tabla en PostgreSQL está vacía actualmente.")
     return False
 
 
 # ==========================================
-# 5. FUNCIÓN AUXILIAR PARA CALCULAR EL SIGUIENTE TIEMPO EN EL RELOJ
+# 5. TEMPORIZADOR Y RELOJ
 # ==========================================
 def calcular_siguiente_tiempo_reloj(minutos_intervalo):
   ahora = datetime.now()
   minuto_actual = ahora.minute
   segundo_actual = ahora.second
 
-  # Calcular cuántos minutos faltan para el siguiente múltiplo exacto
   residuo = minuto_actual % minutos_intervalo
   minutos_faltantes = (
       minutos_intervalo - residuo
@@ -563,7 +556,6 @@ def calcular_siguiente_tiempo_reloj(minutos_intervalo):
   if minutos_faltantes == 0 and segundo_actual > 0:
     minutos_faltantes = minutos_intervalo
 
-  # Siguiente ejecución exacta alineada al reloj
   siguiente_tiempo = (
       ahora.replace(second=0, microsecond=0)
       + timedelta(minutes=minutos_faltantes)
@@ -575,9 +567,6 @@ def calcular_siguiente_tiempo_reloj(minutos_intervalo):
   return siguiente_tiempo, int(total_segundos_hasta_siguiente)
 
 
-# ==========================================
-# 6. GESTIÓN DE ESTADO PARA EL TEMPORIZADOR
-# ==========================================
 if "is_running" not in st.session_state:
   st.session_state.is_running = False
 if "next_run_time" not in st.session_state:
@@ -586,7 +575,77 @@ if "intervalo_minutos_sel" not in st.session_state:
   st.session_state.intervalo_minutos_sel = 5
 
 # ==========================================
-# 7. TÍTULO Y PANEL DE CONFIGURACIÓN DE TIEMPO
+# 6. CARGA DE DATOS PARA INDICADORES Y VISTAS
+# ==========================================
+total_registros_db = obtener_total_registros()
+df_filtrado = cargar_datos_api()
+
+# Calcular contadores para la barra lateral izquierda
+total_serie_api = 0
+if not df_filtrado.empty and "serie" in df_filtrado.columns:
+  total_serie_api = df_filtrado["serie"].dropna().astype(str).str.strip()
+  total_serie_api = (
+      total_serie_api[
+          ~total_serie_api.str.lower().isin(["", "none", "nan", "null"])
+      ]
+      .count()
+  )
+
+total_serie_pg_lleno = 0
+try:
+  engine_pg = obtener_motor_postgres()
+  with engine_pg.connect() as conn:
+    res_serie_pg = conn.execute(
+        text(
+            'SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor" WHERE'
+            ' "_Serie" IS NOT NULL AND TRIM(CAST("_Serie" AS TEXT)) != \'\' AND'
+            " LOWER(TRIM(CAST(\"_Serie\" AS TEXT))) NOT IN ('none', 'nan',"
+            " 'null')"
+        )
+    )
+    total_serie_pg_lleno = res_serie_pg.scalar()
+except Exception:
+  total_serie_pg_lleno = 0
+
+# ==========================================
+# 7. BARRA LATERAL IZQUIERDA (SIDEBAR)
+# ==========================================
+with st.sidebar:
+  st.markdown("### 🚰 Panel de Control MIAA")
+  st.markdown("---")
+  st.markdown("#### 📊 Indicadores de Cobertura")
+
+  st.metric(
+      label="Registros API con Serie",
+      value=f"{total_serie_api:,}",
+      help="Total de registros de la API que poseen una serie válida.",
+  )
+
+  st.metric(
+      label="PostgreSQL (_Serie lleno)",
+      value=f"{total_serie_pg_lleno:,}",
+      help=(
+          "Registros en la base de datos local que ya tienen el campo _Serie"
+          " poblado."
+      ),
+  )
+
+  # Barra de estatus visual de cobertura
+  if total_serie_api > 0:
+    porcentaje_cobertura = min(
+        100.0, (total_serie_pg_lleno / total_serie_api) * 100
+    )
+    st.markdown(f"**Sincronización:** {porcentaje_cobertura:.1f}%")
+    st.progress(porcentaje_cobertura / 100.0)
+  else:
+    st.markdown("**Sincronización:** 0.0%")
+    st.progress(0.0)
+
+  st.markdown("---")
+  st.markdown("💡 *Todos los registros de la API deben reflejarse en PG.*")
+
+# ==========================================
+# 8. INTERFAZ PRINCIPAL VISUAL
 # ==========================================
 st.markdown(
     "<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True
@@ -623,12 +682,11 @@ if btn_iniciar:
   st.session_state.is_running = True
   st.session_state.intervalo_minutos_sel = minutos_seleccionados
 
-  # Sincronizar de inmediato con el reloj del sistema
   sig_tiempo, _ = calcular_siguiente_tiempo_reloj(minutos_seleccionados)
   st.session_state.next_run_time = sig_tiempo
 
   agregar_log(
-      f"Temporizador sincronizado al reloj. Próxima ejecución programada para"
+      f"▶️ Temporizador activado. Próxima ejecución sincronizada al reloj a"
       f" las {sig_tiempo.strftime('%H:%M:%S')}."
   )
   st.success(
@@ -640,23 +698,19 @@ if btn_iniciar:
 if btn_parar:
   st.session_state.is_running = False
   st.session_state.next_run_time = None
-  agregar_log("Temporizador detenido manualmente por el usuario.")
+  agregar_log("⏹️ Temporizador detenido manualmente por el usuario.")
   st.warning("Temporizador detenido.")
   st.rerun()
 
 st.markdown("---")
 
 
-# ==========================================
-# 8. FRAGMENTO AISLADO CON BARRA DE PROGRESO, CONTADOR Y CONSOLA
-# ==========================================
 @st.fragment(run_every=1)
 def renderizar_progreso_y_consola():
   if st.session_state.is_running and st.session_state.next_run_time:
     ahora = datetime.now()
     if ahora >= st.session_state.next_run_time:
       ejecutar_sincronizacion_automatica()
-      # Reprogramar para el siguiente múltiplo de reloj exacto
       sig_tiempo, _ = calcular_siguiente_tiempo_reloj(
           st.session_state.intervalo_minutos_sel
       )
@@ -667,7 +721,6 @@ def renderizar_progreso_y_consola():
     restante = (st.session_state.next_run_time - ahora).total_seconds()
     restante = max(0, int(restante))
 
-    # Intervalo total en segundos desde el inicio del bloque actual
     min_sel = st.session_state.intervalo_minutos_sel
     total_intervalo_secs = min_sel * 60
     transcurrido = total_intervalo_secs - restante
@@ -704,16 +757,10 @@ renderizar_progreso_y_consola()
 
 st.markdown("---")
 
-# ==========================================
-# 9. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
-# ==========================================
 tab1, tab2 = st.tabs([
     "🚰 Panel Principal y Gestión",
     "📋 Tablas de Datos (PostgreSQL y API)",
 ])
-
-total_registros_db = obtener_total_registros()
-df_filtrado = cargar_datos_api()
 
 with tab1:
   st.markdown(
@@ -824,11 +871,11 @@ with tab1:
               conn_up.commit()
 
             agregar_log(
-                f"Limpieza masiva ejecutada. Campos vaciados en toda la tabla:"
-                f" {campos_a_limpiar_masivo}"
+                f"🧹 Limpieza masiva ejecutada. Campos vaciados en toda la"
+                f" tabla: {campos_a_limpiar_masivo}"
             )
             st.success(
-                "¡Los campos seleccionados han sido vaciados en todos los"
+                "¡Los campos seleccionados ha sido vaciados en todos los"
                 " registros exitosamente!"
             )
             st.rerun()
