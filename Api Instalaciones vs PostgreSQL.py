@@ -2,6 +2,7 @@
 # 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS
 # ==========================================
 from datetime import datetime, timedelta
+import time
 from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
@@ -455,8 +456,8 @@ def procesar_cruce_datos(
   df_conmedidor_pg["_Serie"] = nuevas_series
   df_conmedidor_pg["_Colonia"] = nuevas_colonias
   df_conmedidor_pg["_Domicilio"] = nuevos_domicilios
-  df_conmedidor_pg["_Instalador"] = nuevas_instaladores
-  df_conmedidor_pg["_Tipo_instalador"] = nuevas_tipos
+  df_conmedidor_pg["_Instalador"] = nuevos_instaladores
+  df_conmedidor_pg["_Tipo_instalador"] = nuevos_tipos
 
   lecturas_limpias = []
   for v in nuevas_lecturas:
@@ -707,7 +708,7 @@ with st.sidebar:
     st.rerun()
 
 # ==========================================
-# 8. INTERFAZ PRINCIPAL Y BARRA DE PROGRESO DE EJECUCIÓN
+# 8. INTERFAZ PRINCIPAL Y BARRAS DE PROGRESO (ESPERA Y EJECUCIÓN)
 # ==========================================
 st.markdown(
     """
@@ -772,13 +773,12 @@ st.markdown(
     "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
 )
 
-# Contenedores dedicados para la barra de progreso de ejecución en tiempo real
-st.markdown("#### 🔄 Estado y Progreso de Ejecución Activa")
+# Contenedores para Estado y Barras (Espera y Ejecución)
+st.markdown("#### 🔄 Estado y Progreso del Sistema")
 estado_ejecucion_placeholder = st.empty()
 barra_progreso_placeholder = st.empty()
-barra_progreso_placeholder.progress(0, text="Listo para ejecutar...")
 
-# Comprobar si el temporizador activó la ejecución automática
+# Lógica del Temporizador y Cuenta Regresiva (Segundero y su barra de progreso de espera)
 if st.session_state.is_running and st.session_state.next_run_time:
   ahora = datetime.now(ZONA_MEXICO)
   if ahora >= st.session_state.next_run_time:
@@ -790,6 +790,57 @@ if st.session_state.is_running and st.session_state.next_run_time:
     )
     st.session_state.next_run_time = sig_tiempo
     st.rerun()
+  else:
+    _, segundos_restantes = calcular_siguiente_tiempo_reloj(
+        st.session_state.intervalo_minutos_sel
+    )
+    # Recalcular segundos exactos restantes hasta la hora objetivo
+    segundos_totales_intervalo = (
+        st.session_state.intervalo_minutos_sel * 60
+    )
+    segundos_restantes = max(
+        0,
+        int(
+            (
+                st.session_state.next_run_time
+                - datetime.now(ZONA_MEXICO)
+            ).total_seconds()
+        ),
+    )
+
+    # Progreso inverso para la barra de espera (de 0.0 a 1.0 según transcurre el tiempo)
+    progreso_espera = max(
+        0.0,
+        min(
+            1.0,
+            1.0 - (segundos_restantes / float(segundos_totales_intervalo)),
+        ),
+    )
+
+    mins_r = segundos_restantes // 60
+    secs_r = segundos_restantes % 60
+    tiempo_formateado = f"{mins_r:02d}:{secs_r:02d}"
+
+    estado_ejecucion_placeholder.markdown(
+        f"⏳ **Temporizador activo.** Próxima ejecución automática a las"
+        f" **{st.session_state.next_run_time.strftime('%H:%M:%S')}** (Faltan"
+        f" **{tiempo_formateado}**)"
+    )
+    barra_progreso_placeholder.progress(
+        progreso_espera,
+        text=(
+            f"Tiempo en espera para ejecución: {int(progreso_espera * 100)}%"
+            f" completado — Restan {tiempo_formateado}"
+        ),
+    )
+
+    time.sleep(1)
+    st.rerun()
+else:
+  estado_ejecucion_placeholder.markdown(
+      "⏸️ **Temporizador inactivo.** Presiona **INICIAR** en la barra lateral."
+  )
+  barra_progreso_placeholder.progress(0, text="Listo para iniciar temporizador...")
 
 st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
 
