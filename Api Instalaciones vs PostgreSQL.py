@@ -207,6 +207,13 @@ def cargar_datos_api():
 
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
+            # Reordenar columnas para poner 'Cliente' y 'Predio_Viv' al principio
+            cols_prioritarias = [
+                c for c in ["Cliente", "Predio_Viv"] if c in df.columns
+            ]
+            otras_cols = [c for c in df.columns if c not in cols_prioritarias]
+            df = df[cols_prioritarias + otras_cols]
+
           return df
     return pd.DataFrame()
   except Exception:
