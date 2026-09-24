@@ -59,7 +59,7 @@ st.markdown(
 )
 
 # ==========================================
-# 2. GESTIÓN DE ESTADOS Y HILO / TIEMPO SEGURO
+# 2. GESTIÓN DE ESTADOS
 # ==========================================
 ZONA_MEXICO = ZoneInfo("America/Mexico_City")
 
@@ -192,7 +192,7 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. PROCESO DE SINCRONIZACIÓN CON TRAZAS SQL EN VIVO
+# 4. PROCESO DE SINCRONIZACIÓN RÁPIDO Y SEGURO
 # ==========================================
 def ejecutar_proceso_sincronizacion(es_automatico=False):
   tipo_ejec = "automático (periódico)" if es_automatico else "manual"
@@ -289,7 +289,7 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
   actualizar_estado_proceso(
       0.50,
       f"Procesando {len(df):,} registros...",
-      f"📦 Se obtuvieron {len(df):,} registros de la API. Preparando mapeo y limpieza...",
+      f"📦 Se obtuvieron {len(df):,} registros de la API. Mapeando y cargando en tabla temporal...",
   )
 
   cols_a_remover = [
@@ -368,9 +368,9 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
   col_finst = next((c for c in ["fechaInstalacion"] if c in df.columns), None)
 
   actualizar_estado_proceso(
-      0.65,
-      "Conectando a PostgreSQL...",
-      "🔄 [Paso 3/3] Abriendo conexión con PostgreSQL para actualizar tabla `usuarios_miaa_conmedidor`...",
+      0.70,
+      "Conectando a PostgreSQL y aplicando cambios masivos...",
+      "🔄 [Paso 3/3] Conectando a PostgreSQL para actualizar registros en lote...",
   )
   try:
     engine_pg = obtener_motor_postgres()
@@ -378,130 +378,77 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
     actualizar_estado_proceso(0.0, f"Error PG: {e}", f"❌ Error al conectar a PostgreSQL: {e}")
     return
 
-  query_update_directo = text("""
-        UPDATE "Usuarios"."usuarios_miaa_conmedidor"
-        SET 
-            "_Serie" = COALESCE(NULLIF("_Serie"::text, ''), :serie),
-            "_Colonia" = COALESCE(NULLIF("_Colonia"::text, ''), :colonia),
-            "_Domicilio" = COALESCE(NULLIF("_Domicilio"::text, ''), :domicilio),
-            "_Instalador" = COALESCE(NULLIF("_Instalador"::text, ''), :instalador),
-            "_Tipo_instalador" = COALESCE(NULLIF("_Tipo_instalador"::text, ''), :tipo_inst),
-            "_Lectura_actual" = COALESCE("_Lectura_actual", :lectura),
-            "_Fecha_registro" = COALESCE("_Fecha_registro", :freg),
-            "_Fecha_instalacion" = COALESCE("_Fecha_instalacion", :finst)
-        WHERE 
-            (:predio != '' AND "Predio_Viv"::text = :predio)
-            OR 
-            (:cliente != '' AND "Cliente"::text = :cliente);
-    """)
+  # Preparamos un DataFrame limpio optimizado para inserción en lote (staging temporal)
+  df_staging = pd.DataFrame()
+  df_staging["p_val"] = df[col_predio].astype(str).str.strip() if col_predio else ""
+  df_staging["c_val"] = df[col_cliente].astype(str).str.strip() if col_cliente else ""
+  df_staging["s_val"] = df[col_serie].astype(str).str.strip() if col_serie else None
+  df_staging["col_val"] = df[col_colonia].astype(str).str.strip() if col_colonia else None
+  df_staging["dom_val"] = df[col_domicilio].astype(str).str.strip() if col_domicilio else None
+  df_staging["inst_val"] = df[col_instalador].astype(str).str.strip() if col_instalador else None
 
-  actualizados = 0
-  saltados_vacio = 0
-  total_filas_df = len(df)
+  def parsear_tipo(val):
+    if pd.isna(val):
+      return "MIAA"
+    if str(val).strip().lower() in ["true", "1", "yes", "s", "true"]:
+      return "Externo"
+    return "MIAA"
 
-  agregar_log(
-      "🛠️ Ejecutando UPDATE directo en PostgreSQL por cada registro..."
-  )
+  df_staging["tipo_val"] = df[col_ext].apply(parsear_tipo) if col_ext else "MIAA"
+  df_staging["lec_val"] = pd.to_numeric(df[col_lec], errors="coerce") if col_lec else None
+  df_staging["freg_val"] = pd.to_datetime(df[col_freg], errors="coerce") if col_freg else None
+  df_staging["finst_val"] = pd.to_datetime(df[col_finst], errors="coerce") if col_finst else None
+
+  # Eliminamos filas sin predio ni cliente válidos
+  df_staging = df_staging[
+      (df_staging["p_val"] != "") & (df_staging["p_val"].str.lower() != "nan")
+      | (df_staging["c_val"] != "") & (df_staging["c_val"].str.lower() != "nan")
+  ]
+
+  total_a_procesar = len(df_staging)
+  agregar_log(f"🛠️ Subiendo {total_a_procesar:,} registros limpios a tabla temporal y sincronizando...")
 
   try:
     with engine_pg.begin() as conn:
-      for index, row in df.iterrows():
-        p_val = (
-            str(row[col_predio]).strip()
-            if col_predio and pd.notna(row[col_predio])
-            else ""
-        )
-        c_val = (
-            str(row[col_cliente]).strip()
-            if col_cliente and pd.notna(row[col_cliente])
-            else ""
-        )
+      # Crear tabla temporal de staging en PostgreSQL
+      conn.execute(text("DROP TABLE IF EXISTS temp_staging_miaa;"))
+      df_staging.to_sql(
+          "temp_staging_miaa",
+          con=conn,
+          if_exists="replace",
+          index=False,
+          chunksize=5000,
+      )
 
-        if not p_val and not c_val:
-          saltados_vacio += 1
-          continue
+      # Ejecutar UPDATE masivo optimizado por lote en la base de datos
+      conn.execute(text("""
+                UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS t
+                SET 
+                    "_Serie" = COALESCE(NULLIF(t."_Serie"::text, ''), s.s_val),
+                    "_Colonia" = COALESCE(NULLIF(t."_Colonia"::text, ''), s.col_val),
+                    "_Domicilio" = COALESCE(NULLIF(t."_Domicilio"::text, ''), s.dom_val),
+                    "_Instalador" = COALESCE(NULLIF(t."_Instalador"::text, ''), s.inst_val),
+                    "_Tipo_instalador" = COALESCE(NULLIF(t."_Tipo_instalador"::text, ''), s.tipo_val),
+                    "_Lectura_actual" = COALESCE(t."_Lectura_actual", s.lec_val),
+                    "_Fecha_registro" = COALESCE(t."_Fecha_registro", s.freg_val),
+                    "_Fecha_instalacion" = COALESCE(t."_Fecha_instalacion", s.finst_val)
+                FROM temp_staging_miaa AS s
+                WHERE 
+                    (s.p_val != '' AND t."Predio_Viv"::text = s.p_val)
+                    OR 
+                    (s.c_val != '' AND t."Cliente"::text = s.c_val);
+            """))
 
-        s_val = (
-            str(row[col_serie]).strip()
-            if col_serie and pd.notna(row[col_serie])
-            else None
-        )
-        col_val = (
-            str(row[col_colonia]).strip()
-            if col_colonia and pd.notna(row[col_colonia])
-            else None
-        )
-        dom_val = (
-            str(row[col_domicilio]).strip()
-            if col_domicilio and pd.notna(row[col_domicilio])
-            else None
-        )
-        inst_val = (
-            str(row[col_instalador]).strip()
-            if col_instalador and pd.notna(row[col_instalador])
-            else None
-        )
-
-        tipo_val = "MIAA"
-        if col_ext and pd.notna(row[col_ext]):
-          val_ext = row[col_ext]
-          if val_ext in [True, 1, "1", "true", "True", "YES", "yes", "S", "s"]:
-            tipo_val = "Externo"
-
-        lec_val = (
-            pd.to_numeric(row[col_lec], errors="coerce")
-            if col_lec and pd.notna(row[col_lec])
-            else None
-        )
-        freg_val = (
-            pd.to_datetime(row[col_freg], errors="coerce")
-            if col_freg and pd.notna(row[col_freg])
-            else None
-        )
-        finst_val = (
-            pd.to_datetime(row[col_finst], errors="coerce")
-            if col_finst and pd.notna(row[col_finst])
-            else None
-        )
-
-        conn.execute(
-            query_update_directo,
-            {
-                "predio": p_val,
-                "cliente": c_val,
-                "serie": s_val,
-                "colonia": col_val,
-                "domicilio": dom_val,
-                "instalador": inst_val,
-                "tipo_inst": tipo_val,
-                "lectura": lec_val,
-                "freg": freg_val,
-                "finst": finst_val,
-            },
-        )
-        actualizados += 1
-
-        # Actualización de progreso y traza visual cada 100 registros
-        if actualizados % 100 == 0 or actualizados == total_filas_df:
-          progreso_calc = 0.65 + (
-              (actualizados / max(1, total_filas_df)) * 0.35
-          )
-          st.session_state.sync_progress = float(progreso_calc)
-          st.session_state.sync_status_text = (
-              f"PostgreSQL UPDATE: {actualizados:,} / {total_filas_df:,}"
-              f" procesados (Saltados vacíos: {saltados_vacio})"
-          )
+      conn.execute(text("DROP TABLE IF EXISTS temp_staging_miaa;"))
 
     resumen_final = (
-        f"✅ ¡Sincronización y actualización en PostgreSQL finalizada con"
-        f" éxito!<br>• Total analizados: {total_filas_df:,}<br>• Actualizados"
-        f" en DB: {actualizados:,}<br>• Registros sin predio/cliente"
-        f" (saltados): {saltados_vacio:,}"
+        f"✅ ¡Sincronización masiva en PostgreSQL completada con éxito!<br>• Registros"
+        f" procesados: {total_a_procesar:,}"
     )
     actualizar_estado_proceso(1.0, "¡Sincronización completada!", resumen_final)
     st.session_state.ultimo_tiempo_ejecucion = time.time()
   except Exception as e:
-    actualizar_estado_proceso(0.0, f"Error en DB: {e}", f"❌ Error crítico haciendo UPDATE en PostgreSQL: {e}")
+    actualizar_estado_proceso(0.0, f"Error en DB: {e}", f"❌ Error crítico en lote con PostgreSQL: {e}")
 
 
 # ==========================================
@@ -568,82 +515,80 @@ st.markdown("---")
 
 
 # ==========================================
-# 7. FRAGMENTO REACTIVO EN VIVO (SEGUNDERO Y BARRAS DE PROGRESO)
+# 7. CONTROLADOR DEL TEMPORIZADOR (SEGURO SIN CONGELAMIENTO)
 # ==========================================
-@st.fragment(run_every=0.5)
-def renderizar_consola_y_progreso():
-  if st.session_state.is_running_timer and st.session_state.next_run_time:
-    ahora_mx = datetime.now(ZONA_MEXICO)
-    if ahora_mx >= st.session_state.next_run_time:
-      ejecutar_proceso_sincronizacion(es_automatico=True)
-      st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
-          seconds=st.session_state.total_seconds_interval
-      )
+if st.session_state.is_running_timer and st.session_state.next_run_time:
+  ahora_mx = datetime.now(ZONA_MEXICO)
+  if ahora_mx >= st.session_state.next_run_time:
+    ejecutar_proceso_sincronizacion(es_automatico=True)
+    st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
+        seconds=st.session_state.total_seconds_interval
+    )
+    st.rerun()
 
-  if st.session_state.is_running_timer and st.session_state.next_run_time:
-    ahora_mx = datetime.now(ZONA_MEXICO)
-    restante = max(
-        0, int((st.session_state.next_run_time - ahora_mx).total_seconds())
-    )
-    total = st.session_state.total_seconds_interval
-    progreso_timer = min(1.0, max(0.0, (total - restante) / total))
-    mins, secs = divmod(restante, 60)
-    st.markdown(
-        f"<p style='font-size: 13px; color: #38bdf8; font-weight: bold;"
-        f" margin-bottom: 2px;'>⏱️ Próxima ejecución automática en:"
-        f" {mins:02d}:{secs:02d}</p>",
-        unsafe_allow_html=True,
-    )
-    st.progress(progreso_timer)
-  else:
-    st.markdown(
-        "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
-        " margin-bottom: 2px;'>⏸️ Temporizador inactivo. Usa 'INICIAR' en la"
-        " barra lateral.</p>",
-        unsafe_allow_html=True,
-    )
-    st.progress(0.0)
-
-  # Consola en vivo con trazas detalladas de la base de datos
-  st.markdown("#### 🖥️ Consola de Registros en Tiempo Real (Trazas PostgreSQL)")
-  logs_html = "<br>".join(st.session_state.logs)
+# ==========================================
+# 8. VISUALIZACIÓN DE ESTADO Y CONSOLA EN VIVO
+# ==========================================
+if st.session_state.is_running_timer and st.session_state.next_run_time:
+  ahora_mx = datetime.now(ZONA_MEXICO)
+  restante = max(
+      0, int((st.session_state.next_run_time - ahora_mx).total_seconds())
+  )
+  total = st.session_state.total_seconds_interval
+  progreso_timer = min(1.0, max(0.0, (total - restante) / total))
+  mins, secs = divmod(restante, 60)
   st.markdown(
-      f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
+      f"<p style='font-size: 13px; color: #38bdf8; font-weight: bold;"
+      f" margin-bottom: 2px;'>⏱️ Próxima ejecución automática en:"
+      f" {mins:02d}:{secs:02d}</p>",
+      unsafe_allow_html=True,
+  )
+  st.progress(progreso_timer)
+else:
+  st.markdown(
+      "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
+      " margin-bottom: 2px;'>⏸️ Temporizador inactivo. Usa 'INICIAR' en la"
+      " barra lateral.</p>",
+      unsafe_allow_html=True,
+  )
+  st.progress(0.0)
+
+st.markdown("#### 🖥️ Consola de Registros en Tiempo Real (Trazas PostgreSQL)")
+logs_html = "<br>".join(st.session_state.logs)
+st.markdown(
+    f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
+)
+
+st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+current_prog = st.session_state.sync_progress
+current_text = st.session_state.sync_status_text
+
+if 0.0 < current_prog < 1.0:
+  st.markdown(
+      f"<p style='font-size: 13px; color: #f59e0b; font-weight: bold;"
+      f" margin-bottom: 4px;'>🔄 Base de Datos (PostgreSQL): {current_text}"
+      f" ({int(current_prog * 100)}%)</p>",
+      unsafe_allow_html=True,
+  )
+elif current_prog >= 1.0:
+  st.markdown(
+      f"<p style='font-size: 13px; color: #22c55e; font-weight: bold;"
+      f" margin-bottom: 4px;'>{current_text}</p>",
+      unsafe_allow_html=True,
+  )
+else:
+  st.markdown(
+      f"<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
+      f" margin-bottom: 4px;'>💤 Estado: {current_text}</p>",
+      unsafe_allow_html=True,
   )
 
-  st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-  current_prog = st.session_state.sync_progress
-  current_text = st.session_state.sync_status_text
-
-  if 0.0 < current_prog < 1.0:
-    st.markdown(
-        f"<p style='font-size: 13px; color: #f59e0b; font-weight: bold;"
-        f" margin-bottom: 4px;'>🔄 Base de Datos (PostgreSQL): {current_text}"
-        f" ({int(current_prog * 100)}%)</p>",
-        unsafe_allow_html=True,
-    )
-  elif current_prog >= 1.0:
-    st.markdown(
-        f"<p style='font-size: 13px; color: #22c55e; font-weight: bold;"
-        f" margin-bottom: 4px;'>{current_text}</p>",
-        unsafe_allow_html=True,
-    )
-  else:
-    st.markdown(
-        f"<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
-        f" margin-bottom: 4px;'>💤 Estado: {current_text}</p>",
-        unsafe_allow_html=True,
-    )
-
-  st.progress(current_prog)
-
-
-renderizar_consola_y_progreso()
+st.progress(current_prog)
 
 st.markdown("---")
 
 # ==========================================
-# 8. INDICADORES Y PESTAÑAS
+# 9. INDICADORES Y PESTAÑAS
 # ==========================================
 total_registros_db = obtener_total_registros()
 total_con_serie = obtener_total_con_serie()
