@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import threading
 import time
 from zoneinfo import ZoneInfo
 import pandas as pd
@@ -59,14 +60,15 @@ st.markdown(
 )
 
 # ==========================================
-# 2. GESTIÓN DE ESTADOS
+# 2. GESTIÓN DE ESTADOS Y HILO AUTOMÁTICO
 # ==========================================
 ZONA_MEXICO = ZoneInfo("America/Mexico_City")
 
 if "logs" not in st.session_state:
   hora_actual_mx = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs = [
-      f"[{hora_actual_mx}] Sistema inicializado. Listo para operar."
+      f"[{hora_actual_mx}] Sistema inicializado en segundo plano. Listo para"
+      " operar."
   ]
 
 
@@ -173,17 +175,19 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. PROCESO DIRECTO SIN TABLAS TEMPORALES
+# 4. PROCESO DE SINCRONIZACIÓN DIRECTO
 # ==========================================
-def ejecutar_proceso_sincronizacion():
-  agregar_log("🚀 Iniciando proceso de sincronización directa con la API...")
+def ejecutar_proceso_sincronizacion(es_automatico=False):
+  tipo_ejec = "automático" if es_automatico else "manual"
+  agregar_log(
+      f"🚀 Iniciando proceso de sincronización ({tipo_ejec}) con la API..."
+  )
 
   try:
     usuario = st.secrets["api"]["usuario"]
     password = st.secrets["api"]["password"]
   except Exception as e:
     agregar_log(f"❌ Error leyendo st.secrets: {e}")
-    st.error(f"Error en secretos: {e}")
     return
 
   # 1. Login API
@@ -199,12 +203,10 @@ def ejecutar_proceso_sincronizacion():
     agregar_log(
         f"❌ Error de red al conectar al login: {type(e).__name__} - {e}"
     )
-    st.error(f"Error de red en Login: {e}")
     return
 
   if res_login.status_code != 200:
     agregar_log(f"❌ Falló la autenticación. Código: {res_login.status_code}")
-    st.error(f"Error de autenticación (HTTP {res_login.status_code})")
     return
 
   try:
@@ -216,7 +218,6 @@ def ejecutar_proceso_sincronizacion():
 
   if not token:
     agregar_log("❌ No se pudo extraer el token de acceso.")
-    st.error("No se encontró token de acceso.")
     return
 
   agregar_log("✅ Autenticación exitosa. Descargando instalaciones...")
@@ -233,19 +234,16 @@ def ejecutar_proceso_sincronizacion():
     )
   except Exception as e:
     agregar_log(f"❌ Error al descargar instalaciones: {e}")
-    st.error(f"Error al descargar instalaciones: {e}")
     return
 
   if res_inst.status_code != 200:
     agregar_log(f"❌ Error HTTP en instalaciones: {res_inst.status_code}")
-    st.error(f"La API devolvió el código HTTP {res_inst.status_code}")
     return
 
   try:
     data = res_inst.json()
   except Exception as e:
     agregar_log(f"❌ Error al decodificar JSON: {e}")
-    st.error("Error al procesar la respuesta de la API.")
     return
 
   if isinstance(data, list):
@@ -263,14 +261,12 @@ def ejecutar_proceso_sincronizacion():
 
   if df.empty:
     agregar_log("❌ El dataset devuelto por la API está vacío.")
-    st.warning("La API no devolvió registros.")
     return
 
   agregar_log(
       f"📦 Registros obtenidos de la API: {len(df):,}. Mapeando campos..."
   )
 
-  # Limpieza de columnas innecesarias
   cols_a_remover = [
       c
       for c in df.columns
@@ -312,7 +308,6 @@ def ejecutar_proceso_sincronizacion():
 
     df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-  # Mapeo a variables locales para inserción directa
   col_predio = next(
       (
           c
@@ -347,18 +342,13 @@ def ejecutar_proceso_sincronizacion():
   col_freg = next((c for c in ["fechaRegistro"] if c in df.columns), None)
   col_finst = next((c for c in ["fechaInstalacion"] if c in df.columns), None)
 
-  agregar_log(
-      "🔄 [Paso 2/3] Conectando a PostgreSQL para actualización directa por"
-      " lotes..."
-  )
+  agregar_log("🔄 [Paso 2/3] Conectando a PostgreSQL para actualizar registros...")
   try:
     engine_pg = obtener_motor_postgres()
   except Exception as e:
     agregar_log(f"❌ Error al conectar a PostgreSQL: {e}")
-    st.error(f"Error conectando a PostgreSQL: {e}")
     return
 
-  # Consulta SQL optimizada directa con parámetros (Sin tablas temporales)
   query_update_directo = text("""
         UPDATE "Usuarios"."usuarios_miaa_conmedidor"
         SET 
@@ -377,32 +367,66 @@ def ejecutar_proceso_sincronizacion():
     """)
 
   actualizados = 0
-  total_filas = len(df)
 
   try:
     with engine_pg.begin() as conn:
       for index, row in df.iterrows():
-        p_val = str(row[col_predio]).strip() if col_predio and pd.notna(row[col_predio]) else ""
-        c_val = str(row[col_cliente]).strip() if col_cliente and pd.notna(row[col_cliente]) else ""
+        p_val = (
+            str(row[col_predio]).strip()
+            if col_predio and pd.notna(row[col_predio])
+            else ""
+        )
+        c_val = (
+            str(row[col_cliente]).strip()
+            if col_cliente and pd.notna(row[col_cliente])
+            else ""
+        )
 
         if not p_val and not c_val:
           continue
 
-        s_val = str(row[col_serie]).strip() if col_serie and pd.notna(row[col_serie]) else None
-        col_val = str(row[col_colonia]).strip() if col_colonia and pd.notna(row[col_colonia]) else None
-        dom_val = str(row[col_domicilio]).strip() if col_domicilio and pd.notna(row[col_domicilio]) else None
-        inst_val = str(row[col_instalador]).strip() if col_instalador and pd.notna(row[col_instalador]) else None
-        
-        # Tipo de instalador
+        s_val = (
+            str(row[col_serie]).strip()
+            if col_serie and pd.notna(row[col_serie])
+            else None
+        )
+        col_val = (
+            str(row[col_colonia]).strip()
+            if col_colonia and pd.notna(row[col_colonia])
+            else None
+        )
+        dom_val = (
+            str(row[col_domicilio]).strip()
+            if col_domicilio and pd.notna(row[col_domicilio])
+            else None
+        )
+        inst_val = (
+            str(row[col_instalador]).strip()
+            if col_instalador and pd.notna(row[col_instalador])
+            else None
+        )
+
         tipo_val = "MIAA"
         if col_ext and pd.notna(row[col_ext]):
           val_ext = row[col_ext]
           if val_ext in [True, 1, "1", "true", "True", "YES", "yes", "S", "s"]:
             tipo_val = "Externo"
 
-        lec_val = pd.to_numeric(row[col_lec], errors="coerce") if col_lec and pd.notna(row[col_lec]) else None
-        freg_val = pd.to_datetime(row[col_freg], errors="coerce") if col_freg and pd.notna(row[col_freg]) else None
-        finst_val = pd.to_datetime(row[col_finst], errors="coerce") if col_finst and pd.notna(row[col_finst]) else None
+        lec_val = (
+            pd.to_numeric(row[col_lec], errors="coerce")
+            if col_lec and pd.notna(row[col_lec])
+            else None
+        )
+        freg_val = (
+            pd.to_datetime(row[col_freg], errors="coerce")
+            if col_freg and pd.notna(row[col_freg])
+            else None
+        )
+        finst_val = (
+            pd.to_datetime(row[col_finst], errors="coerce")
+            if col_finst and pd.notna(row[col_finst])
+            else None
+        )
 
         conn.execute(
             query_update_directo,
@@ -422,16 +446,38 @@ def ejecutar_proceso_sincronizacion():
         actualizados += 1
 
     agregar_log(
-        f"✅ [Paso 3/3] ¡Sincronización directa completada! Se procesaron {actualizados:,} registros en la base de datos."
+        f"✅ [Paso 3/3] ¡Sincronización directa completada! Se procesaron"
+        f" {actualizados:,} registros."
     )
-    st.success("¡Proceso finalizado correctamente sin tablas temporales!")
   except Exception as e:
-    agregar_log(f"❌ Error crítico en la ejecución directa: {e}")
-    st.error(f"Error en la base de datos: {e}")
+    agregar_log(f"❌ Error crítico en base de datos: {e}")
 
 
 # ==========================================
-# 5. BARRA LATERAL (SIDEBAR)
+# 5. HILO EN SEGUNDO PLANO (TEMPORIZADOR AUTOMÁTICO)
+# ==========================================
+def bucle_temporizador_automatico():
+  # Espera inicial opcional de 1 minuto para que la app cargue bien
+  time.sleep(60)
+  while True:
+    try:
+      agregar_log("⏰ Disparador automático activado (cada 15 minutos).")
+      ejecutar_proceso_sincronizacion(es_automatico=True)
+    except Exception as e:
+      agregar_log(f"❌ Error en el hilo automático: {e}")
+    # Espera 15 minutos exactos (900 segundos)
+    time.sleep(900)
+
+
+if "hilo_iniciado" not in st.session_state:
+  st.session_state.hilo_iniciado = True
+  hilo = threading.Thread(target=bucle_temporizador_automatico, daemon=True)
+  hilo.start()
+  agregar_log("🚀 Hilo de ejecución automática en segundo plano iniciado.")
+
+
+# ==========================================
+# 6. BARRA LATERAL (SIDEBAR)
 # ==========================================
 with st.sidebar:
   st.markdown("<h2>⚙️ Configuración</h2>", unsafe_allow_html=True)
@@ -440,20 +486,19 @@ with st.sidebar:
   st.markdown("#### Ejecución Manual")
   if st.button("🚀 Ejecutar Ahora", type="primary", use_container_width=True):
     with st.spinner("Sincronizando de forma directa... Por favor espera."):
-      ejecutar_proceso_sincronizacion()
+      ejecutar_proceso_sincronizacion(es_automatico=False)
     st.rerun()
 
   st.markdown("---")
   st.markdown("#### Información del Sistema")
   st.markdown(
-      "<p style='font-size:12px; color:#94a3b8;'>El código ha sido refactorizado"
-      " para eliminar tablas temporales y realizar actualizaciones directas"
-      " optimizadas.</p>",
+      "<p style='font-size:12px; color:#94a3b8;'>El temporizador automático"
+      " corre cada 15 minutos en segundo plano de manera simultánea.</p>",
       unsafe_allow_html=True,
   )
 
 # ==========================================
-# 6. TÍTULO PRINCIPAL
+# 7. TÍTULO PRINCIPAL
 # ==========================================
 st.markdown(
     "<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True
@@ -461,7 +506,7 @@ st.markdown(
 st.markdown("---")
 
 # ==========================================
-# 7. CONSOLA DE REGISTROS
+# 8. CONSOLA DE REGISTROS
 # ==========================================
 st.markdown("#### 🖥️ Consola de Registros en Tiempo Real")
 logs_html = "<br>".join(st.session_state.logs)
@@ -472,7 +517,7 @@ st.markdown(
 st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
 # ==========================================
-# 8. INDICADORES Y PESTAÑAS
+# 9. INDICADORES Y PESTAÑAS
 # ==========================================
 total_registros_db = obtener_total_registros()
 total_con_serie = obtener_total_con_serie()
