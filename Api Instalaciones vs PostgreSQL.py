@@ -6,6 +6,7 @@ import pandas as pd
 import requests
 from sqlalchemy import create_engine, text
 import streamlit as st
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 # ==========================================
 # 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS
@@ -190,9 +191,11 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. PROCESO EN SEGUNDO PLANO (HILO)
+# 4. PROCESO EN SEGUNDO PLANO (HILO SEGURO)
 # ==========================================
-def ejecutar_sincronizacion_background():
+def ejecutar_sincronizacion_background(
+    api_user, api_pass, pg_user, pg_pass, pg_host, pg_port, pg_db
+):
   if st.session_state.is_syncing:
     return
   st.session_state.is_syncing = True
@@ -203,13 +206,11 @@ def ejecutar_sincronizacion_background():
         "Conectando con la API de MIAA...",
         "🔄 [Paso 1/4] Iniciando autenticación con la API de MIAA...",
     )
-    usuario = st.secrets["api"]["usuario"]
-    password = st.secrets["api"]["password"]
 
     try:
       res_login = requests.post(
           url_login,
-          json={"username": usuario, "password": password},
+          json={"username": api_user, "password": api_pass},
           headers={"Content-Type": "application/json"},
           timeout=15,
       )
@@ -358,14 +359,14 @@ def ejecutar_sincronizacion_background():
 
       df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-    # Paso 2: Staging en Postgres
     actualizar_estado_proceso(
         0.7,
         "Creando tabla temporal en PostgreSQL...",
         "🔄 [Paso 2/4] Conectando con PostgreSQL y creando tabla temporal"
         " (temp_api_staging)...",
     )
-    engine_pg = obtener_motor_postgres()
+    connection_string = f"postgresql+psycopg2://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}"
+    engine_pg = create_engine(connection_string)
 
     df_staging = pd.DataFrame()
     col_predio = next(
@@ -456,7 +457,6 @@ def ejecutar_sincronizacion_background():
           chunksize=5000,
       )
 
-    # Paso 3: Update SQL
     actualizar_estado_proceso(
         0.95,
         "Ejecutando UPDATE masivo en base de datos...",
@@ -487,7 +487,7 @@ def ejecutar_sincronizacion_background():
     actualizar_estado_proceso(
         1.0,
         "¡Sincronización completada con éxito!",
-        "✅ ¡Paso 4/4] Sincronización completada exitosamente en la base de"
+        "✅ [Paso 4/4] Sincronización completada exitosamente en la base de"
         " datos!",
     )
 
@@ -506,9 +506,26 @@ def disparar_hilo():
       st.session_state.logs.insert(
           0, f"[{timestamp}] 🚀 Hilo de ejecución en segundo plano iniciado."
       )
+
+    # LEEMOS LOS SECRETOS AQUÍ EN EL HILO PRINCIPAL ANTES DE ARRANCAR
+    api_user = st.secrets["api"]["usuario"]
+    api_pass = st.secrets["api"]["password"]
+    pg = st.secrets["postgres"]
+
     hilo = threading.Thread(
-        target=ejecutar_sincronizacion_background, daemon=True
+        target=ejecutar_sincronizacion_background,
+        args=(
+            api_user,
+            api_pass,
+            pg["user"],
+            pg["password"],
+            pg["host"],
+            pg["port"],
+            pg["database"],
+        ),
+        daemon=True,
     )
+    add_script_run_ctx(hilo)
     hilo.start()
 
 
@@ -533,6 +550,7 @@ with st.sidebar:
   if st.button("🚀 Ejecutar Ahora", type="primary", use_container_width=True):
     if not st.session_state.is_syncing:
       disparar_hilo()
+      st.rerun()
     else:
       st.warning(
           "El sistema ya se encuentra ejecutando un proceso de inserción."
@@ -571,6 +589,7 @@ with st.sidebar:
           0, f"[{ts}] Temporizador automático activado ({intervalo_sel.lower()})."
       )
     st.success("¡Temporizador activo!")
+    st.rerun()
 
   if btn_parar:
     st.session_state.is_running_timer = False
@@ -581,6 +600,7 @@ with st.sidebar:
           0, f"[{ts}] Temporizador automático detenido."
       )
     st.warning("Temporizador detenido.")
+    st.rerun()
 
 # ==========================================
 # 7. TÍTULO PRINCIPAL
@@ -605,7 +625,6 @@ def renderizar_consola_y_progreso():
           seconds=st.session_state.total_seconds_interval
       )
 
-  # Barra superior de cuenta regresiva del temporizador
   if st.session_state.is_running_timer and st.session_state.next_run_time:
     ahora_mx = datetime.now(ZONA_MEXICO)
     restante = max(
@@ -637,7 +656,6 @@ def renderizar_consola_y_progreso():
       f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
   )
 
-  # BARRA DE PROGRESO REAL DEL PROCESO DE INSERCIÓN (JUSTO DEBAJO DE LA CONSOLA)
   st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
   current_prog = st.session_state.sync_progress
   current_text = st.session_state.sync_status_text
