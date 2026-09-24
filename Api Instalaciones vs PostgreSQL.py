@@ -237,9 +237,9 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE SECUENCIAL Y AUDITORÍA DE NO EMPAREJADOS
+# 4. FUNCIÓN DE CRUCE SECUENCIAL PURO
 # ==========================================
-def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
+def procesar_cruce_datos(df_conmedidor_pg, df_filtrado, registrar_auditoria=False):
   df_api_merge = df_filtrado.copy()
 
   if df_api_merge.empty or df_conmedidor_pg.empty:
@@ -338,7 +338,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       else ""
   )
 
-  # Conjuntos para rastrear qué llaves de la API fueron emparejadas exitosamente
   api_predios_usados = set()
   api_clientes_usados = set()
 
@@ -432,38 +431,40 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     )
     nuevas_f_inst.append(val)
 
-  # --- AUDITORÍA DE REGISTROS DE LA API NO ENCONTRADOS EN POSTGRESQL ---
-  registros_no_encontrados = 0
-  for _, api_row in df_api_merge.iterrows():
-    kp_val = str(api_row.get("key_predio", "")).strip()
-    kc_val = str(api_row.get("key_cliente", "")).strip()
+  # --- AUDITORÍA DE REGISTROS DE LA API NO ENCONTRADOS (SOLO DURANTE EJECUCIÓN REAL) ---
+  if registrar_auditoria:
+    registros_no_encontrados = 0
+    for _, api_row in df_api_merge.iterrows():
+      kp_val = str(api_row.get("key_predio", "")).strip()
+      kc_val = str(api_row.get("key_cliente", "")).strip()
 
-    encontrado = False
-    if kp_val and kp_val in api_predios_usados:
-      encontrado = True
-    elif kc_val and kc_val in api_clientes_usados:
-      encontrado = True
+      encontrado = False
+      if kp_val and kp_val in api_predios_usados:
+        encontrado = True
+      elif kc_val and kc_val in api_clientes_usados:
+        encontrado = True
 
-    if not encontrado and (
-        kp_val.lower() not in invalidos or kc_val.lower() not in invalidos
-    ):
-      registros_no_encontrados += 1
-      serie_api = api_row.get("serie", "S/N")
+      if not encontrado and (
+          kp_val.lower() not in invalidos or kc_val.lower() not in invalidos
+      ):
+        registros_no_encontrados += 1
+        serie_api = api_row.get("serie", "S/N")
+        agregar_log(
+            f"⚠️ [API NO MATCH] Registro API no encontrado en Postgres ->"
+            f" Cliente: '{kc_val}' | Predio_Viv: '{kp_val}' | Serie:"
+            f" '{serie_api}'"
+        )
+
+    if registros_no_encontrados > 0:
       agregar_log(
-          f"⚠️ [API NO INSERTADO/MATCH] Registro API no encontrado en Postgres"
-          f" -> Cliente: '{kc_val}' | Predio_Viv: '{kp_val}' | Serie: '{serie_api}'"
+          f"🔍 Total de registros de la API sin coincidencia en PostgreSQL:"
+          f" {registros_no_encontrados}"
       )
-
-  if registros_no_encontrados > 0:
-    agregar_log(
-        f"🔍 Total de registros de la API sin coincidencia en PostgreSQL:"
-        f" {registros_no_encontrados}"
-    )
-  else:
-    agregar_log(
-        "✅ Todos los registros válidos de la API hicieron match y se actualizaron"
-        " correctamente."
-    )
+    else:
+      agregar_log(
+          "✅ Todos los registros válidos de la API hicieron match"
+          " correctamente."
+      )
 
   df_conmedidor_pg["_Serie"] = nuevas_series
   df_conmedidor_pg["_Colonia"] = nuevas_colonias
@@ -514,7 +515,6 @@ def ejecutar_sincronizacion_automatica():
       "🔄 [CICLO INICIADO] Conectando a la API de MIAA para descarga de"
       " instalaciones..."
   )
-  st.rerun()
 
   df_filtrado = cargar_datos_api()
 
@@ -558,7 +558,7 @@ def ejecutar_sincronizacion_automatica():
 
     status_container.update(
         label=(
-            "⚙️ [3/4] Procesando cruce secuencial (Predio_Viv -> Cliente) para"
+            "⚙️ [3/4] Procesando cruce secuencial y auditoría para"
             f" {total_registros:,} registros..."
         ),
         state="running",
@@ -569,8 +569,9 @@ def ejecutar_sincronizacion_automatica():
         " registros locales..."
     )
 
+    # AQUÍ ACTIVAMOS LA AUDITORÍA ÚNICAMENTE EN LA EJECUCIÓN REAL
     df_actualizado, c_p, c_c = procesar_cruce_datos(
-        df_conmedidor_pg, df_filtrado
+        df_conmedidor_pg, df_filtrado, registrar_auditoria=True
     )
 
     agregar_log(
@@ -1018,7 +1019,10 @@ with tab1:
       )
 
       if not df_pagina_pg.empty and not df_filtrado.empty:
-        df_pagina_pg, _, _ = procesar_cruce_datos(df_pagina_pg, df_filtrado)
+        # Aquí NO registramos auditoría para no saturar las vistas previas
+        df_pagina_pg, _, _ = procesar_cruce_datos(
+            df_pagina_pg, df_filtrado, registrar_auditoria=False
+        )
 
       st.dataframe(df_pagina_pg, use_container_width=True, height=400)
   else:
@@ -1042,7 +1046,9 @@ with tab2:
     t2_off = (t2_pag - 1) * t2_filas
     df_t2 = cargar_pagina_usuarios_db(limit=t2_filas, offset=t2_off)
     if not df_t2.empty and not df_filtrado.empty:
-      df_t2, _, _ = procesar_cruce_datos(df_t2, df_filtrado)
+      df_t2, _, _ = procesar_cruce_datos(
+          df_t2, df_filtrado, registrar_auditoria=False
+      )
 
     st.dataframe(df_t2, use_container_width=True, height=350)
   else:
