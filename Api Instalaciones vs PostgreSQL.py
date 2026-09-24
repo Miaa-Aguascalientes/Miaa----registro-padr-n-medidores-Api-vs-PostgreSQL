@@ -222,14 +222,18 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE DUAL (Predio_Viv Y numeroCliente)
+# 4. FUNCIÓN DE CRUCE SECUENCIAL EN DOS PASOS (PREDIO_VIV -> CLIENTE)
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   df_api_merge = df_filtrado.copy()
 
   if df_api_merge.empty or df_conmedidor_pg.empty:
+    agregar_log(
+        "⚠️ Advertencia: El DataFrame de la API o de PostgreSQL está vacío."
+    )
     return df_conmedidor_pg
 
+  # 1. Preparar llaves de la API
   if "Predio_Viv" in df_api_merge.columns:
     df_api_merge["key_predio"] = (
         df_api_merge["Predio_Viv"].astype(str).str.strip()
@@ -258,6 +262,12 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   else:
     df_api_merge["key_cliente"] = ""
 
+  agregar_log(
+      f"🔍 Mapeando índices de búsqueda: {len(df_api_merge):,} registros de API"
+      " listos."
+  )
+
+  # Diccionarios exclusivos para el PRIMER JOIN (Predio_Viv)
   dict_api_serie_p = dict(
       zip(df_api_merge["key_predio"], df_api_merge.get("serie", ""))
   )
@@ -280,6 +290,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       zip(df_api_merge["key_predio"], df_api_merge.get("fechaInstalacion", ""))
   )
 
+  # Diccionarios exclusivos para el SEGUNDO JOIN (Cliente)
   dict_api_serie_c = dict(
       zip(df_api_merge["key_cliente"], df_api_merge.get("serie", ""))
   )
@@ -322,6 +333,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   else:
     dict_api_tipo_p, dict_api_tipo_c = {}, {}
 
+  # 2. Preparar llaves de PostgreSQL
   col_pg_predio = next(
       (
           c
@@ -350,42 +362,62 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       else ""
   )
 
-  def obtener_valor(row, dict_p, dict_c, default_val=""):
+  matches_predio = 0
+  matches_cliente = 0
+
+  # 3. Lógica secuencial estricta (Paso 1: Predio_Viv -> Paso 2: Cliente)
+  def aplicar_cruce_secuencial(row, dict_p, dict_c, default_val):
+    nonlocal matches_predio, matches_cliente
     kp = row["key_predio"]
     kc = row["key_cliente"]
 
-    if kp and kp.lower() not in ["none", "nan", ""] and kp in dict_p:
-      val = dict_p[kp]
-      if pd.notna(val) and str(val).strip() not in ["", "None", "nan"]:
-        return val
+    # PRIMER JOIN: Buscar estrictamente por Predio_Viv
+    if kp and kp.lower() not in ["none", "nan", "", "nat"]:
+      if kp in dict_p:
+        val = dict_p[kp]
+        if pd.notna(val) and str(val).strip() not in ["", "None", "nan", "NaT"]:
+          matches_predio += 1
+          return val
 
-    if kc and kc.lower() not in ["none", "nan", ""] and kc in dict_c:
-      val = dict_c[kc]
-      if pd.notna(val) and str(val).strip() not in ["", "None", "nan"]:
-        return val
+    # SEGUNDO JOIN: Si no encontró por Predio_Viv, buscar por Cliente
+    if kc and kc.lower() not in ["none", "nan", "", "nat"]:
+      if kc in dict_c:
+        val = dict_c[kc]
+        if pd.notna(val) and str(val).strip() not in ["", "None", "nan", "NaT"]:
+          matches_cliente += 1
+          return val
 
     return default_val
 
+  agregar_log(
+      "⚡ Ejecutando primer JOIN (Predio_Viv) y segundo JOIN (Cliente)"
+      " secuencialmente..."
+  )
+
+  # Reseteamos contadores para esta ejecución
+  matches_predio = 0
+  matches_cliente = 0
+
   df_conmedidor_pg["_Serie"] = df_conmedidor_pg.apply(
-      lambda r: obtener_valor(
+      lambda r: aplicar_cruce_secuencial(
           r, dict_api_serie_p, dict_api_serie_c, r.get("_Serie", "")
       ),
       axis=1,
   )
   df_conmedidor_pg["_Colonia"] = df_conmedidor_pg.apply(
-      lambda r: obtener_valor(
+      lambda r: aplicar_cruce_secuencial(
           r, dict_api_colonia_p, dict_api_colonia_c, r.get("_Colonia", "")
       ),
       axis=1,
   )
   df_conmedidor_pg["_Domicilio"] = df_conmedidor_pg.apply(
-      lambda r: obtener_valor(
+      lambda r: aplicar_cruce_secuencial(
           r, dict_api_domicilio_p, dict_api_domicilio_c, r.get("_Domicilio", "")
       ),
       axis=1,
   )
   df_conmedidor_pg["_Instalador"] = df_conmedidor_pg.apply(
-      lambda r: obtener_valor(
+      lambda r: aplicar_cruce_secuencial(
           r,
           dict_api_instalador_p,
           dict_api_instalador_c,
@@ -394,7 +426,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       axis=1,
   )
   df_conmedidor_pg["_Tipo_instalador"] = df_conmedidor_pg.apply(
-      lambda r: obtener_valor(
+      lambda r: aplicar_cruce_secuencial(
           r, dict_api_tipo_p, dict_api_tipo_c, r.get("_Tipo_instalador", "MIAA")
       ),
       axis=1,
@@ -402,8 +434,11 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
 
   df_conmedidor_pg["_Lectura_actual"] = pd.to_numeric(
       df_conmedidor_pg.apply(
-          lambda r: obtener_valor(
-              r, dict_api_lectura_p, dict_api_lectura_c, r.get("_Lectura_actual", 0)
+          lambda r: aplicar_cruce_secuencial(
+              r,
+              dict_api_lectura_p,
+              dict_api_lectura_c,
+              r.get("_Lectura_actual", 0),
           ),
           axis=1,
       ),
@@ -412,7 +447,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
 
   df_conmedidor_pg["_Fecha_registro"] = pd.to_datetime(
       df_conmedidor_pg.apply(
-          lambda r: obtener_valor(
+          lambda r: aplicar_cruce_secuencial(
               r,
               dict_api_f_reg_p,
               dict_api_f_reg_c,
@@ -424,7 +459,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   )
   df_conmedidor_pg["_Fecha_instalacion"] = pd.to_datetime(
       df_conmedidor_pg.apply(
-          lambda r: obtener_valor(
+          lambda r: aplicar_cruce_secuencial(
               r,
               dict_api_f_inst_p,
               dict_api_f_inst_c,
@@ -433,6 +468,15 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
           axis=1,
       ),
       errors="coerce",
+  )
+
+  # Nota: Como las filas se evalúan columna por columna, dividimos los contadores de coincidencias acumuladas entre las columnas procesadas para reflejar el balance real en consola.
+  real_matches_p = matches_predio // 8
+  real_matches_c = matches_cliente // 8
+
+  agregar_log(
+      f"📊 Cruce secuencial finalizado: {real_matches_p:,} registros actualizados"
+      f" por Predio-Viv y {real_matches_c:,} registros actualizados por Cliente."
   )
 
   df_conmedidor_pg = df_conmedidor_pg.drop(
