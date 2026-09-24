@@ -442,7 +442,6 @@ def procesar_cruce_datos(
     )
     nuevas_f_inst.append(val)
 
-  # --- AUDITORÍA DE REGISTROS DE LA API NO ENCONTRADOS (SOLO DURANTE EJECUCIÓN REAL) ---
   if registrar_auditoria:
     registros_no_encontrados = 0
     for _, api_row in df_api_merge.iterrows():
@@ -495,28 +494,32 @@ def procesar_cruce_datos(
 
   df_conmedidor_pg["_Lectura_actual"] = lecturas_limpias
 
-  # --- PROCESAMIENTO SEGURO DE FECHAS (EVITA EL ERROR DE TZ-AWARE) ---
-  def convertir_a_zona_mexico(serie_fechas):
-    s_dt = pd.to_datetime(serie_fechas, errors="coerce")
-    resultado = []
+  # --- CONVERSIÓN DE FECHAS SEGURA Y DIRECTA (BLINDADA CONTRA CONFLICTOS) ---
+  def convertir_a_zona_mexico_segura(serie_entrada):
+    s_dt = pd.to_datetime(serie_entrada, errors="coerce")
+    resultados = []
     for val in s_dt:
       if pd.isna(val):
-        resultado.append(pd.NaT)
+        resultados.append(pd.NaT)
       else:
         try:
           if val.tzinfo is not None:
-            resultado.append(val.astimezone(ZONA_MEXICO))
+            resultados.append(val.astimezone(ZONA_MEXICO))
           else:
             localizada = val.tz_localize(
                 "UTC", nonexistent="shift_forward", ambiguous="NaT"
             )
-            resultado.append(localizada.astimezone(ZONA_MEXICO))
+            resultados.append(localizada.astimezone(ZONA_MEXICO))
         except Exception:
-          resultado.append(pd.NaT)
-    return pd.Series(resultado, index=s_dt.index)
+          resultados.append(pd.NaT)
+    return pd.Series(resultados, index=df_conmedidor_pg.index)
 
-  df_conmedidor_pg["_Fecha_registro"] = convertir_a_zona_mexico(nuevas_f_reg)
-  df_conmedidor_pg["_Fecha_instalacion"] = convertir_a_zona_mexico(nuevas_f_inst)
+  df_conmedidor_pg["_Fecha_registro"] = convertir_a_zona_mexico_segura(
+      nuevas_f_reg
+  )
+  df_conmedidor_pg["_Fecha_instalacion"] = convertir_a_zona_mexico_segura(
+      nuevas_f_inst
+  )
 
   df_conmedidor_pg = df_conmedidor_pg.drop(
       columns=["key_predio", "key_cliente"], errors="ignore"
@@ -779,9 +782,7 @@ st.markdown("#### Configuración")
 with st.container(border=True):
   c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
   with c1:
-    modo = st.selectbox(
-        "Modo", ["Periódico"], label_visibility="collapsed"
-    )
+    modo = st.selectbox("Modo", ["Periódico"], label_visibility="collapsed")
   with c2:
     opciones_intervalo = {
         "Cada 1 minuto": 1,
