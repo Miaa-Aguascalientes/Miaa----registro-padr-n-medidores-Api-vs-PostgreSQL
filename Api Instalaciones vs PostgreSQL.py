@@ -67,7 +67,7 @@ if "logs" not in st.session_state:
 def agregar_log(mensaje):
   timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
-  if len(st.session_state.logs) > 100:
+  if len(st.session_state.logs) > 200:
     st.session_state.logs.pop()
 
 
@@ -237,7 +237,7 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE SECUENCIAL CORREGIDO
+# 4. FUNCIÓN DE CRUCE SECUENCIAL Y AUDITORÍA DE NO EMPAREJADOS
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   df_api_merge = df_filtrado.copy()
@@ -256,7 +256,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       else ""
   )
 
-  # Filtrar estrictamente claves vacías o inválidas para que no se mapeen por error
   invalidos = {"none", "nan", "", "nat", "0", "null", "None", "NaN"}
 
   df_api_p = df_api_merge[~df_api_merge["key_predio"].str.lower().isin(invalidos)]
@@ -339,22 +338,26 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       else ""
   )
 
+  # Conjuntos para rastrear qué llaves de la API fueron emparejadas exitosamente
+  api_predios_usados = set()
+  api_clientes_usados = set()
+
   def aplicar_cruce_secuencial(row, dict_p, dict_c, default_val):
     kp = str(row.get("key_predio", "")).strip()
     kc = str(row.get("key_cliente", "")).strip()
 
-    # 1. Intentar buscar por Predio_Viv si es válido y existe en el diccionario
     if kp and kp.lower() not in invalidos:
       if kp in dict_p:
         val = dict_p[kp]
         if pd.notna(val) and str(val).strip().lower() not in invalidos:
+          api_predios_usados.add(kp)
           return val, "predio"
 
-    # 2. Si no se encontró por Predio_Viv, buscar por Cliente como respaldo
     if kc and kc.lower() not in invalidos:
       if kc in dict_c:
         val = dict_c[kc]
         if pd.notna(val) and str(val).strip().lower() not in invalidos:
+          api_clientes_usados.add(kc)
           return val, "cliente"
 
     return default_val, None
@@ -428,6 +431,39 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
         r.get("_Fecha_instalacion", pd.NaT),
     )
     nuevas_f_inst.append(val)
+
+  # --- AUDITORÍA DE REGISTROS DE LA API NO ENCONTRADOS EN POSTGRESQL ---
+  registros_no_encontrados = 0
+  for _, api_row in df_api_merge.iterrows():
+    kp_val = str(api_row.get("key_predio", "")).strip()
+    kc_val = str(api_row.get("key_cliente", "")).strip()
+
+    encontrado = False
+    if kp_val and kp_val in api_predios_usados:
+      encontrado = True
+    elif kc_val and kc_val in api_clientes_usados:
+      encontrado = True
+
+    if not encontrado and (
+        kp_val.lower() not in invalidos or kc_val.lower() not in invalidos
+    ):
+      registros_no_encontrados += 1
+      serie_api = api_row.get("serie", "S/N")
+      agregar_log(
+          f"⚠️ [API NO INSERTADO/MATCH] Registro API no encontrado en Postgres"
+          f" -> Cliente: '{kc_val}' | Predio_Viv: '{kp_val}' | Serie: '{serie_api}'"
+      )
+
+  if registros_no_encontrados > 0:
+    agregar_log(
+        f"🔍 Total de registros de la API sin coincidencia en PostgreSQL:"
+        f" {registros_no_encontrados}"
+    )
+  else:
+    agregar_log(
+        "✅ Todos los registros válidos de la API hicieron match y se actualizaron"
+        " correctamente."
+    )
 
   df_conmedidor_pg["_Serie"] = nuevas_series
   df_conmedidor_pg["_Colonia"] = nuevas_colonias
@@ -679,7 +715,6 @@ with st.sidebar:
       ),
   )
 
-  # Nuevos indicadores solicitados
   st.metric(
       label="API: Con Predio Registrado",
       value=f"{total_predio_api_valido:,}",
