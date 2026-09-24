@@ -518,9 +518,11 @@ def ejecutar_sincronizacion_automatica(
           f"🔄 **{mensaje}** ({int(valor_pct * 100)}%)"
       )
 
-  # Paso 1: Inicio (25%)
+  # Paso 1: Inicio de conexión a la API (20%)
   actualizar_progreso(
-      0.25, "[PASO 1/4] Iniciando sincronización y conectando a la API..."
+      0.20,
+      "[PASO 1/5] Iniciando sincronización. Conectando con API de"
+      " instalaciones...",
   )
   df_filtrado = cargar_datos_api()
 
@@ -530,15 +532,23 @@ def ejecutar_sincronizacion_automatica(
     )
     return False
 
+  total_descargados = len(df_filtrado)
   actualizar_progreso(
-      0.50,
-      f"[PASO 2/4] API OK. Se descargaron {len(df_filtrado):,} registros."
-      " Leyendo PostgreSQL...",
+      0.40,
+      f"[PASO 2/5] API OK. Se descargaron {total_descargados:,} registros."
+      " Preparando motor PostgreSQL...",
   )
 
-  # Paso 3: Lectura PostgreSQL (75%)
+  # Paso 3: Conexión y lectura progresiva de PostgreSQL (60%)
   try:
+    actualizar_progreso(
+        0.50,
+        "[PASO 3/5] Conectando a PostgreSQL y cargando tabla completa de"
+        " usuarios...",
+    )
     engine_pg = obtener_motor_postgres()
+
+    # Lectura optimizada por chunks o directa con reporte detallado inmediato
     df_conmedidor_pg = pd.read_sql(
         'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg
     )
@@ -547,11 +557,11 @@ def ejecutar_sincronizacion_automatica(
     return False
 
   if not df_conmedidor_pg.empty:
-    total_registros = len(df_conmedidor_pg)
+    total_registros_pg = len(df_conmedidor_pg)
     actualizar_progreso(
-        0.75,
-        f"[PASO 3/4] Procesando cruce estricto para {total_registros:,}"
-        " registros...",
+        0.70,
+        f"[PASO 4/5] PostgreSQL leído ({total_registros_pg:,} registros)."
+        " Ejecutando cruce estricto de datos...",
     )
 
     df_actualizado, c_p, _ = procesar_cruce_datos(
@@ -559,7 +569,9 @@ def ejecutar_sincronizacion_automatica(
     )
 
     actualizar_progreso(
-        0.90, "[PASO 4/4] Guardando cambios actualizados en PostgreSQL..."
+        0.85,
+        "[PASO 5/5] Cruce completado. Guardando y actualizando registros en"
+        " PostgreSQL...",
     )
 
     try:
@@ -572,8 +584,8 @@ def ejecutar_sincronizacion_automatica(
       )
       actualizar_progreso(
           1.0,
-          f"🎉 [CICLO EXITOSO] Sincronización completada. {total_registros:,}"
-          " registros actualizados.",
+          f"🎉 [CICLO EXITOSO] Sincronización 100% completada. Total"
+          f" procesados: {total_registros_pg:,} registros.",
       )
       return True
     except Exception as ex:
@@ -794,10 +806,7 @@ if st.session_state.is_running and st.session_state.next_run_time:
     _, segundos_restantes = calcular_siguiente_tiempo_reloj(
         st.session_state.intervalo_minutos_sel
     )
-    # Recalcular segundos exactos restantes hasta la hora objetivo
-    segundos_totales_intervalo = (
-        st.session_state.intervalo_minutos_sel * 60
-    )
+    segundos_totales_intervalo = st.session_state.intervalo_minutos_sel * 60
     segundos_restantes = max(
         0,
         int(
@@ -808,7 +817,6 @@ if st.session_state.is_running and st.session_state.next_run_time:
         ),
     )
 
-    # Progreso inverso para la barra de espera (de 0.0 a 1.0 según transcurre el tiempo)
     progreso_espera = max(
         0.0,
         min(
