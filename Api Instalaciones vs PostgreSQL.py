@@ -297,7 +297,7 @@ def procesar_cruce_datos(
 
   df_api_con_predio = df_api[
       ~df_api["key_predio"].str.lower().isin(invalidos)
-    ].copy()
+  ].copy()
   agregar_log(
       f"🔍 [CRUCE] Registros válidos de la API con Predio_Viv:"
       f" {len(df_api_con_predio):,}"
@@ -356,7 +356,16 @@ def procesar_cruce_datos(
 
   predios_usados_pg = set()
 
-  nuevas_series, nuevas_colonias, nuevos_domicilios, nuevos_instaladores, nuevos_tipos, nuevas_lecturas, nuevas_f_reg, nuevas_f_inst = (
+  (
+      nuevas_series,
+      nuevas_colonias,
+      nuevos_domicilios,
+      nuevos_instaladores,
+      nuevos_tipos,
+      nuevas_lecturas,
+      nuevas_f_reg,
+      nuevas_f_inst,
+  ) = (
       [],
       [],
       [],
@@ -443,7 +452,7 @@ def procesar_cruce_datos(
   df_conmedidor_pg["_Colonia"] = nuevas_colonias
   df_conmedidor_pg["_Domicilio"] = nuevos_domicilios
   df_conmedidor_pg["_Instalador"] = nuevos_instaladores
-  df_conmedidor_pg["_Tipo_instalador"] = nuevas_tipos
+  df_conmedidor_pg["_Tipo_instalador"] = nuevos_tipos
 
   lecturas_limpias = []
   for v in nuevas_lecturas:
@@ -483,7 +492,9 @@ def procesar_cruce_datos(
       nuevas_f_inst
   )
 
-  df_conmedidor_pg = df_conmedidor_pg.drop(columns=["key_predio"], errors="ignore")
+  df_conmedidor_pg = df_conmedidor_pg.drop(
+      columns=["key_predio"], errors="ignore"
+  )
   agregar_log(
       f"✅ [CRUCE COMPLETO] Cruce finalizado con éxito. Coincidencias por"
       f" Predio_Viv: {contador_predio:,}"
@@ -740,55 +751,64 @@ with st.sidebar:
 # 8. INTERFAZ PRINCIPAL VISUAL
 # ==========================================
 st.markdown(
-    "<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True
+    """
+    <div style="text-align: center; margin-bottom: 20px;">
+        <h2 style="color: #f8fafc; font-weight: 700;">MIAA - Sistema de Registros e Instalaciones</h2>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 st.markdown("---")
 
-# Indicadores de Cobertura en la Zona Principal
-st.markdown("#### 📊 Indicadores de Cobertura")
-col_ind1, col_ind2, col_ind3, col_ind4, col_ind5 = st.columns(5)
+# Indicadores de Cobertura con Estilo de Tarjetas Personalizadas
+col_ind1, col_ind2, col_ind3 = st.columns(3)
 
 with col_ind1:
-  st.metric(
-      label="Registros API con Serie",
-      value=f"{total_serie_api:,}",
-      help="Total de registros de la API que poseen una serie válida.",
+  st.markdown(
+      f"""
+        <div class="metric-card">
+            <div style="font-size: 28px; margin-right: 15px;">🎯</div>
+            <div class="metric-content">
+                <div class="metric-title">REGISTROS API CON SERIE</div>
+                <div class="metric-value">{total_serie_api:,}</div>
+            </div>
+        </div>
+    """,
+      unsafe_allow_html=True,
   )
 
 with col_ind2:
-  st.metric(
-      label="PostgreSQL (_Serie lleno)",
-      value=f"{total_serie_pg_lleno:,}",
-      help=(
-          "Registros en la base de datos local que ya tienen el campo _Serie"
-          " poblado."
-      ),
+  st.markdown(
+      f"""
+        <div class="metric-card">
+            <div style="font-size: 28px; margin-right: 15px;">✅</div>
+            <div class="metric-content">
+                <div class="metric-title">POSTGRESQL (_SERIE LLENO)</div>
+                <div class="metric-value">{total_serie_pg_lleno:,}</div>
+            </div>
+        </div>
+    """,
+      unsafe_allow_html=True,
   )
 
 with col_ind3:
-  st.metric(
-      label="API: Con Predio Registrado",
-      value=f"{total_predio_api_valido:,}",
-      help="Registros de la API que cuentan con un Predio_Viv válido.",
+  porcentaje_cobertura = (
+      min(100.0, (total_serie_pg_lleno / total_serie_api) * 100)
+      if total_serie_api > 0
+      else 0.0
   )
-
-with col_ind4:
-  st.metric(
-      label="API: Sin Predio Registrado",
-      value=f"{total_predio_api_vacio:,}",
-      help="Registros de la API sin Predio_Viv válido.",
+  st.markdown(
+      f"""
+        <div class="metric-card">
+            <div style="font-size: 28px; margin-right: 15px;">📊</div>
+            <div class="metric-content">
+                <div class="metric-title">SINCRONIZACIÓN</div>
+                <div class="metric-value">{porcentaje_cobertura:.1f}%</div>
+            </div>
+        </div>
+    """,
+      unsafe_allow_html=True,
   )
-
-with col_ind5:
-  if total_serie_api > 0:
-    porcentaje_cobertura = min(
-        100.0, (total_serie_pg_lleno / total_serie_api) * 100
-    )
-    st.metric(
-        label="Sincronización", value=f"{porcentaje_cobertura:.1f}%"
-    )
-  else:
-    st.metric(label="Sincronización", value="0.0%")
 
 st.markdown("---")
 
