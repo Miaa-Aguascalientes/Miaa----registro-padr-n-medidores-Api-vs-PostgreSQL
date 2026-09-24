@@ -209,7 +209,7 @@ def cargar_datos_api():
 
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-            # 4. Eliminar campos solicitados (predio, unidad, uuid, numeroCliente y variantes)
+            # 4. Eliminar campos sobrantes
             columnas_a_quitar = [
                 "predio",
                 "predioViv",
@@ -245,9 +245,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   df_api_merge = df_filtrado.copy()
 
   if df_api_merge.empty or df_conmedidor_pg.empty:
-    agregar_log(
-        "⚠️ Advertencia: El DataFrame de la API o de PostgreSQL está vacío."
-    )
     return df_conmedidor_pg
 
   # Preparar llaves de búsqueda limpias usando directamente Predio_Viv y Cliente
@@ -307,14 +304,12 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       zip(df_api_merge["key_cliente"], df_api_merge.get("fechaInstalacion", ""))
   )
 
-
   def mapear_tipo_externo(val):
     if val in [True, 1, "1", "true", "True", "YES", "yes", "S", "s"]:
       return "Externo"
     elif val in [False, 0, "0", "false", "False", "NO", "no", "N", "n"]:
       return "MIAA"
     return "MIAA"
-
 
   if "usuarioExterno" in df_api_merge.columns:
     df_api_merge["tipo_calculado"] = df_api_merge["usuarioExterno"].apply(
@@ -356,7 +351,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
         if pd.notna(val) and str(val).strip() not in ["", "None", "nan", "NaT"]:
           return val, "predio"
 
-    # 2. Join secundario por Cliente contra Cliente
+    # 2. Join secundario por Cliente contra Cliente (cuando Predio_Viv no existe o no hace match)
     if kc and kc.lower() not in ["none", "nan", "", "nat", "0"]:
       if kc in dict_c:
         val = dict_c[kc]
@@ -446,7 +441,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   df_conmedidor_pg["_Instalador"] = nuevos_instaladores
   df_conmedidor_pg["_Tipo_instalador"] = nuevos_tipos
 
-  # Limpieza y conversión segura para Lectura actual
   lecturas_limpias = []
   for v in nuevas_lecturas:
     try:
@@ -463,12 +457,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   )
   df_conmedidor_pg["_Fecha_instalacion"] = pd.to_datetime(
       nuevas_f_inst, errors="coerce"
-  )
-
-  agregar_log(
-      f"📊 Cruce secuencial finalizado: {contador_predio:,} registros"
-      f" actualizados por Predio_Viv y {contador_cliente:,} registros"
-      " actualizados por Cliente."
   )
 
   df_conmedidor_pg = df_conmedidor_pg.drop(
@@ -534,7 +522,7 @@ def ejecutar_sincronizacion_automatica():
 
     status_container.update(
         label=(
-            "⚙️ [3/4] Procesando cruce (Predio_Viv -> Cliente) para"
+            "⚙️ [3/4] Procesando cruce secuencial (Predio_Viv -> Cliente) para"
             f" {total_registros:,} registros..."
         ),
         state="running",
@@ -545,7 +533,38 @@ def ejecutar_sincronizacion_automatica():
         " registros locales..."
     )
 
+    df_api_merge = df_filtrado.copy()
+    df_api_merge["key_predio"] = (
+        df_api_merge["Predio_Viv"].astype(str).str.strip()
+        if "Predio_Viv" in df_api_merge.columns
+        else ""
+    )
+    df_api_merge["key_cliente"] = (
+        df_api_merge["Cliente"].astype(str).str.strip()
+        if "Cliente" in df_api_merge.columns
+        else ""
+    )
+
+    # Contadores temporales para el log de éxito de sincronización
+    c_p = 0
+    c_c = 0
+    # Contamos cuántos hacen match por predio vs cliente en este proceso
+    kp_set = set(df_api_merge["key_predio"])
+    kc_set = set(df_api_merge["key_cliente"])
+    for _, r in df_conmedidor_pg.iterrows():
+      kp = str(r.get("Predio_Viv", "")).strip()
+      kc = str(r.get("Cliente", "")).strip()
+      if kp and kp in kp_set and kp.lower() not in ["none", "nan", "", "0"]:
+        c_p += 1
+      elif kc and kc in kc_set and kc.lower() not in ["none", "nan", "", "0"]:
+        c_c += 1
+
     df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
+
+    agregar_log(
+        f"📊 Cruce secuencial finalizado: {c_p:,} registros actualizados por"
+        f" Predio_Viv y {c_c:,} registros actualizados por Cliente."
+    )
 
     status_container.update(
         label="💾 [4/4] Guardando cambios en PostgreSQL...", state="running"
