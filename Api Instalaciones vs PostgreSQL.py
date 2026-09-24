@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 from sqlalchemy import create_engine, text
@@ -57,16 +58,19 @@ st.markdown(
 )
 
 # ==========================================
-# 2. GESTIÓN DE LOGS (CONSOLA)
+# 2. GESTIÓN DE LOGS (CONSOLA - HORA MÉXICO)
 # ==========================================
+ZONA_MEXICO = ZoneInfo("America/Mexico_City")
+
 if "logs" not in st.session_state:
+  hora_actual_mx = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs = [
-      f"[{datetime.now().strftime('%H:%M:%S')}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
+      f"[{hora_actual_mx}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
   ]
 
 
 def agregar_log(mensaje):
-  timestamp = datetime.now().strftime("%H:%M:%S")
+  timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
   if len(st.session_state.logs) > 100:
     st.session_state.logs.pop()
@@ -160,7 +164,7 @@ def cargar_datos_api():
             ]
             df = df.drop(columns=cols_a_remover, errors="ignore")
 
-            # CREACIÓN OFICIAL DEL CAMPO Predio_Viv INCLUYENDO UNIDADES EN 0
+            # CREACIÓN OFICIAL DEL CAMPO Predio_Viv (Incluyendo unidades en 0 o vacías)
             col_api_predio = next(
                 (
                     c
@@ -186,30 +190,37 @@ def cargar_datos_api():
             if col_api_predio:
 
               def construir_predio_viv(row):
-                p = (
-                    str(row[col_api_predio]).strip()
-                    if pd.notna(row[col_api_predio])
-                    else ""
-                )
-                if not p or p.lower() in ["none", "nan"]:
+                p = row[col_api_predio]
+                if pd.isna(p) or str(p).strip().lower() in ["none", "nan", ""]:
                   return ""
 
-                # Si existe unidad (incluso si es 0, "0", o numérica), la concatenamos con guion medio
-                if col_api_unidad and pd.notna(row[col_api_unidad]):
-                  u = str(row[col_api_unidad]).strip()
-                  if u.lower() not in ["none", "nan"]:
-                    return f"{p}-{u}"
+                p_str = str(p).strip()
+                u = (
+                    row[col_api_unidad]
+                    if col_api_unidad and pd.notna(row[col_api_unidad])
+                    else 0
+                )
+                u_str = str(u).strip()
 
-                # Por defecto si no hay unidad válida
-                return f"{p}-0"
+                if u_str.lower() in ["none", "nan", ""]:
+                  u_str = "0"
+
+                return f"{p_str}-{u_str}"
 
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-              # Mover la columna Predio_Viv a la primera posición (extremo izquierdo)
-              cols = ["Predio_Viv"] + [
-                  col for col in df.columns if col != "Predio_Viv"
-              ]
-              df = df[cols]
+              # Mover la columna Predio_Viv justo a la izquierda del campo predio
+              if "predio" in df.columns:
+                cols = list(df.columns)
+                cols.remove("Predio_Viv")
+                idx_predio = cols.index("predio")
+                cols.insert(idx_predio, "Predio_Viv")
+                df = df[cols]
+              else:
+                cols = ["Predio_Viv"] + [
+                    col for col in df.columns if col != "Predio_Viv"
+                ]
+                df = df[cols]
 
           return df
     return pd.DataFrame()
@@ -428,7 +439,8 @@ with st.container(border=True):
 if btn_iniciar:
   st.session_state.is_running = True
   st.session_state.total_seconds_interval = total_segundos
-  st.session_state.next_run_time = datetime.now() + timedelta(
+  # Cálculo de próxima ejecución basado en la hora de México
+  st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
       seconds=total_segundos
   )
   agregar_log(
@@ -453,16 +465,16 @@ st.markdown("---")
 @st.fragment(run_every=1)
 def renderizar_progreso_y_consola():
   if st.session_state.is_running and st.session_state.next_run_time:
-    ahora = datetime.now()
-    if ahora >= st.session_state.next_run_time:
+    ahora_mx = datetime.now(ZONA_MEXICO)
+    if ahora_mx >= st.session_state.next_run_time:
       ejecutar_sincronizacion_automatica()
-      st.session_state.next_run_time = datetime.now() + timedelta(
+      st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
           seconds=st.session_state.total_seconds_interval
       )
 
   if st.session_state.is_running and st.session_state.next_run_time:
-    ahora = datetime.now()
-    restante = (st.session_state.next_run_time - ahora).total_seconds()
+    ahora_mx = datetime.now(ZONA_MEXICO)
+    restante = (st.session_state.next_run_time - ahora_mx).total_seconds()
     restante = max(0, int(restante))
 
     total_intervalo = st.session_state.total_seconds_interval
@@ -508,6 +520,7 @@ tab1, tab2 = st.tabs([
 ])
 
 total_registros_db = obtener_total_registros()
+df_filtrado = cargar_datos_api()
 
 with tab1:
   st.markdown(
@@ -671,7 +684,6 @@ with tab1:
           limit=filas_por_pagina, offset=offset_val
       )
 
-      df_filtrado = cargar_datos_api()
       if not df_pagina_pg.empty and not df_filtrado.empty:
         df_pagina_pg = procesar_cruce_datos(df_pagina_pg, df_filtrado)
 
@@ -705,8 +717,10 @@ with tab2:
 
   st.markdown("---")
 
-  st.subheader("🌐 Tabla: Datos de la API de Instalación")
+  st.subheader(
+      "🌐 Tabla: Datos de la API de Instalación (Todos los registros)"
+  )
   if not df_filtrado.empty:
-    st.dataframe(df_filtrado.head(100), use_container_width=True, height=350)
+    st.dataframe(df_filtrado, use_container_width=True, height=350)
   else:
     st.warning("No hay datos cargados desde la API.")
