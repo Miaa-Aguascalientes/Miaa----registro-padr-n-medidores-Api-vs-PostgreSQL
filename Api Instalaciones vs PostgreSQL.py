@@ -48,7 +48,7 @@ st.markdown(
             font-family: 'Courier New', Courier, monospace;
             padding: 15px;
             border-radius: 6px;
-            height: 220px;
+            height: 250px;
             overflow-y: scroll;
             font-size: 13px;
             line-height: 1.4;
@@ -85,7 +85,7 @@ if "sync_status_text" not in st.session_state:
 def agregar_log(mensaje):
   timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
-  if len(st.session_state.logs) > 150:
+  if len(st.session_state.logs) > 200:
     st.session_state.logs.pop()
 
 
@@ -192,13 +192,13 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. PROCESO DE SINCRONIZACIÓN DIRECTO Y SEGURO
+# 4. PROCESO DE SINCRONIZACIÓN CON TRAZAS SQL EN VIVO
 # ==========================================
 def ejecutar_proceso_sincronizacion(es_automatico=False):
   tipo_ejec = "automático (periódico)" if es_automatico else "manual"
   actualizar_estado_proceso(
       0.05,
-      "Iniciando sincronización...",
+      "Iniciando ciclo...",
       f"🚀 Iniciando proceso de sincronización ({tipo_ejec}) con la API...",
   )
 
@@ -242,8 +242,8 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
 
   actualizar_estado_proceso(
       0.30,
-      "Descargando registros de instalaciones...",
-      "✅ Autenticación exitosa. Descargando registros de instalaciones...",
+      "Descargando instalaciones de la API...",
+      "✅ Autenticación exitosa. Solicitando endpoint de instalaciones...",
   )
 
   try:
@@ -288,8 +288,8 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
 
   actualizar_estado_proceso(
       0.50,
-      f"Procesando {len(df):,} registros de la API...",
-      f"📦 Registros obtenidos de la API: {len(df):,}. Mapeando campos...",
+      f"Procesando {len(df):,} registros...",
+      f"📦 Se obtuvieron {len(df):,} registros de la API. Preparando mapeo y limpieza...",
   )
 
   cols_a_remover = [
@@ -369,8 +369,8 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
 
   actualizar_estado_proceso(
       0.65,
-      "Actualizando registros en PostgreSQL...",
-      "🔄 [Paso 3/3] Conectando a PostgreSQL para actualizar registros...",
+      "Conectando a PostgreSQL...",
+      "🔄 [Paso 3/3] Abriendo conexión con PostgreSQL para actualizar tabla `usuarios_miaa_conmedidor`...",
   )
   try:
     engine_pg = obtener_motor_postgres()
@@ -396,7 +396,12 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
     """)
 
   actualizados = 0
+  saltados_vacio = 0
   total_filas_df = len(df)
+
+  agregar_log(
+      "🛠️ Ejecutando UPDATE directo en PostgreSQL por cada registro..."
+  )
 
   try:
     with engine_pg.begin() as conn:
@@ -413,6 +418,7 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
         )
 
         if not p_val and not c_val:
+          saltados_vacio += 1
           continue
 
         s_val = (
@@ -475,23 +481,27 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
         )
         actualizados += 1
 
-        if actualizados % 50 == 0 or actualizados == total_filas_df:
+        # Actualización de progreso y traza visual cada 100 registros
+        if actualizados % 100 == 0 or actualizados == total_filas_df:
           progreso_calc = 0.65 + (
               (actualizados / max(1, total_filas_df)) * 0.35
           )
           st.session_state.sync_progress = float(progreso_calc)
           st.session_state.sync_status_text = (
-              f"Actualizando registros: {actualizados:,} /"
-              f" {total_filas_df:,}"
+              f"PostgreSQL UPDATE: {actualizados:,} / {total_filas_df:,}"
+              f" procesados (Saltados vacíos: {saltados_vacio})"
           )
 
-    actualizar_estado_proceso(
-        1.0,
-        "¡Sincronización completada con éxito!",
-        f"✅ ¡Sincronización completada! Se procesaron {actualizados:,} registros.",
+    resumen_final = (
+        f"✅ ¡Sincronización y actualización en PostgreSQL finalizada con"
+        f" éxito!<br>• Total analizados: {total_filas_df:,}<br>• Actualizados"
+        f" en DB: {actualizados:,}<br>• Registros sin predio/cliente"
+        f" (saltados): {saltados_vacio:,}"
     )
+    actualizar_estado_proceso(1.0, "¡Sincronización completada!", resumen_final)
+    st.session_state.ultimo_tiempo_ejecucion = time.time()
   except Exception as e:
-    actualizar_estado_proceso(0.0, f"Error en DB: {e}", f"❌ Error crítico en base de datos: {e}")
+    actualizar_estado_proceso(0.0, f"Error en DB: {e}", f"❌ Error crítico haciendo UPDATE en PostgreSQL: {e}")
 
 
 # ==========================================
@@ -562,7 +572,6 @@ st.markdown("---")
 # ==========================================
 @st.fragment(run_every=0.5)
 def renderizar_consola_y_progreso():
-  # Verificador del temporizador automático
   if st.session_state.is_running_timer and st.session_state.next_run_time:
     ahora_mx = datetime.now(ZONA_MEXICO)
     if ahora_mx >= st.session_state.next_run_time:
@@ -571,7 +580,6 @@ def renderizar_consola_y_progreso():
           seconds=st.session_state.total_seconds_interval
       )
 
-  # Segundero / Cuenta regresiva visual
   if st.session_state.is_running_timer and st.session_state.next_run_time:
     ahora_mx = datetime.now(ZONA_MEXICO)
     restante = max(
@@ -596,8 +604,8 @@ def renderizar_consola_y_progreso():
     )
     st.progress(0.0)
 
-  # Consola en vivo
-  st.markdown("#### 🖥️ Consola de Registros en Tiempo Real")
+  # Consola en vivo con trazas detalladas de la base de datos
+  st.markdown("#### 🖥️ Consola de Registros en Tiempo Real (Trazas PostgreSQL)")
   logs_html = "<br>".join(st.session_state.logs)
   st.markdown(
       f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
@@ -610,21 +618,20 @@ def renderizar_consola_y_progreso():
   if 0.0 < current_prog < 1.0:
     st.markdown(
         f"<p style='font-size: 13px; color: #f59e0b; font-weight: bold;"
-        f" margin-bottom: 4px;'>🔄 Estado de Inserción: {current_text}"
+        f" margin-bottom: 4px;'>🔄 Base de Datos (PostgreSQL): {current_text}"
         f" ({int(current_prog * 100)}%)</p>",
         unsafe_allow_html=True,
     )
   elif current_prog >= 1.0:
     st.markdown(
         f"<p style='font-size: 13px; color: #22c55e; font-weight: bold;"
-        f" margin-bottom: 4px;'>✅ Estado de Inserción: {current_text}"
-        " (100%)</p>",
+        f" margin-bottom: 4px;'>{current_text}</p>",
         unsafe_allow_html=True,
     )
   else:
     st.markdown(
         f"<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
-        f" margin-bottom: 4px;'>💤 Estado de Inserción: {current_text}</p>",
+        f" margin-bottom: 4px;'>💤 Estado: {current_text}</p>",
         unsafe_allow_html=True,
     )
 
