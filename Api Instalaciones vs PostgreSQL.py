@@ -453,18 +453,23 @@ st.markdown("---")
 
 
 # ==========================================
-# 7. FRAGMENTO REACTIVO PARA CONSOLA Y TIEMPO
+# 7. VERIFICADOR SEGURO DEL TEMPORIZADOR (FUERA DE FRAGMENTO PESADO)
+# ==========================================
+if st.session_state.is_running and st.session_state.next_run_time:
+  ahora = datetime.now()
+  if ahora >= st.session_state.next_run_time:
+    ejecutar_sincronizacion_automatica()
+    st.session_state.next_run_time = datetime.now() + timedelta(
+        seconds=st.session_state.total_seconds_interval
+    )
+    st.rerun()
+
+
+# ==========================================
+# 8. FRAGMENTO LIGERO PARA CONSOLA Y TIEMPO (SIN CONGELAR)
 # ==========================================
 @st.fragment(run_every=1)
 def renderizar_progreso_y_consola():
-  if st.session_state.is_running and st.session_state.next_run_time:
-    ahora = datetime.now()
-    if ahora >= st.session_state.next_run_time:
-      ejecutar_sincronizacion_automatica()
-      st.session_state.next_run_time = datetime.now() + timedelta(
-          seconds=st.session_state.total_seconds_interval
-      )
-
   if st.session_state.is_running and st.session_state.next_run_time:
     ahora = datetime.now()
     restante = (st.session_state.next_run_time - ahora).total_seconds()
@@ -505,7 +510,7 @@ renderizar_progreso_y_consola()
 st.markdown("---")
 
 # ==========================================
-# 8. INDICADORES Y PESTAÑAS (DISEÑO ORIGINAL)
+# 9. INDICADORES Y PESTAÑAS (DISEÑO ORIGINAL)
 # ==========================================
 total_registros_db = obtener_total_registros()
 total_con_serie = obtener_total_con_serie()
