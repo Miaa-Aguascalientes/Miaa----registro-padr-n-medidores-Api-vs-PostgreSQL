@@ -8,6 +8,13 @@ import requests
 from sqlalchemy import create_engine, text
 import streamlit as st
 
+st.set_page_config(
+    page_title="Sistema Scada", 
+    page_icon="https://www.miaa.mx/favicon.ico", 
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
 ZONA_MEXICO = ZoneInfo("America/Mexico_City")
 
 st.set_page_config(
