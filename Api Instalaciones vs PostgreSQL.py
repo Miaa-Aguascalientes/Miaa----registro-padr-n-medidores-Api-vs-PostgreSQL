@@ -25,6 +25,18 @@ st.markdown(
         header {visibility: hidden;}
         footer {visibility: hidden;}
         
+        /* ELIMINAR COMPLETAMENTE LA OPACIDAD O BLOQUEO CUANDO STREAMLIT EJECUTA ACCIONES */
+        .stApp {
+            opacity: 1 !important;
+        }
+        [data-testid="stStatusWidget"] {
+            display: none !important;
+        }
+        .main, .block-container {
+            opacity: 1 !important;
+            filter: none !important;
+        }
+        
         /* Eliminar el espacio superior por defecto de la página y los contenedores */
         .block-container {
             padding-top: 1rem !important;
@@ -833,7 +845,7 @@ def renderizar_progreso_y_consola_y_limpieza():
     st.markdown(
         "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
         " margin-bottom: 4px;'>⏸️ Temporizador inactivo. Haz clic en INICIAR"
-        " en la barra lateral para activar el ciclo automático alinéado al"
+        " en la barra lateral para activar el ciclo automático alineado al"
         " reloj.</p>",
         unsafe_allow_html=True,
     )
