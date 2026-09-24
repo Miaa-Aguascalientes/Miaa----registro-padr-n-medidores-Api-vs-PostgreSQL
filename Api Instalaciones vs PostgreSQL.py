@@ -209,7 +209,7 @@ def cargar_datos_api():
 
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-            # 4. Eliminar campos solicitados (predio, unidad, uuid, numeroCliente y sus variantes)
+            # 4. Eliminar campos solicitados (predio, unidad, uuid, numeroCliente y variantes)
             columnas_a_quitar = [
                 "predio",
                 "predioViv",
@@ -239,7 +239,7 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE SECUENCIAL EN DOS PASOS
+# 4. FUNCIÓN DE CRUCE SECUENCIAL (DIRECTO)
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   df_api_merge = df_filtrado.copy()
@@ -250,7 +250,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     )
     return df_conmedidor_pg
 
-  # Preparar llaves de búsqueda limpias
+  # Preparar llaves de búsqueda limpias usando directamente Predio_Viv y Cliente
   df_api_merge["key_predio"] = (
       df_api_merge["Predio_Viv"].astype(str).str.strip()
       if "Predio_Viv" in df_api_merge.columns
@@ -262,7 +262,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       else ""
   )
 
-  # Diccionarios de mapeo rápido
+  # Diccionarios de mapeo rápido basados en Predio_Viv y Cliente
   dict_api_serie_p = dict(
       zip(df_api_merge["key_predio"], df_api_merge.get("serie", ""))
   )
@@ -329,31 +329,15 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   else:
     dict_api_tipo_p, dict_api_tipo_c = {}, {}
 
-  col_pg_predio = next(
-      (
-          c
-          for c in ["Predio_Viv", "predio_viv", "Predio", "predio"]
-          if c in df_conmedidor_pg.columns
-      ),
-      None,
-  )
-  col_pg_cliente = next(
-      (
-          c
-          for c in ["Cliente", "cliente", "numeroCliente", "numero_cliente"]
-          if c in df_conmedidor_pg.columns
-      ),
-      None,
-  )
-
+  # PostgreSQL usa directamente las columnas Predio_Viv y Cliente estandarizadas
   df_conmedidor_pg["key_predio"] = (
-      df_conmedidor_pg[col_pg_predio].astype(str).str.strip()
-      if col_pg_predio
+      df_conmedidor_pg["Predio_Viv"].astype(str).str.strip()
+      if "Predio_Viv" in df_conmedidor_pg.columns
       else ""
   )
   df_conmedidor_pg["key_cliente"] = (
-      df_conmedidor_pg[col_pg_cliente].astype(str).str.strip()
-      if col_pg_cliente
+      df_conmedidor_pg["Cliente"].astype(str).str.strip()
+      if "Cliente" in df_conmedidor_pg.columns
       else ""
   )
 
@@ -365,14 +349,14 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     kp = row["key_predio"]
     kc = row["key_cliente"]
 
-    # 1. Intentar match por Predio_Viv
+    # 1. Join principal por Predio_Viv contra Predio_Viv
     if kp and kp.lower() not in ["none", "nan", "", "nat", "0"]:
       if kp in dict_p:
         val = dict_p[kp]
         if pd.notna(val) and str(val).strip() not in ["", "None", "nan", "NaT"]:
           return val, "predio"
 
-    # 2. Intentar match por Cliente
+    # 2. Join secundario por Cliente contra Cliente
     if kc and kc.lower() not in ["none", "nan", "", "nat", "0"]:
       if kc in dict_c:
         val = dict_c[kc]
@@ -483,7 +467,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
 
   agregar_log(
       f"📊 Cruce secuencial finalizado: {contador_predio:,} registros"
-      f" actualizados por Predio-Viv y {contador_cliente:,} registros"
+      f" actualizados por Predio_Viv y {contador_cliente:,} registros"
       " actualizados por Cliente."
   )
 
@@ -550,7 +534,7 @@ def ejecutar_sincronizacion_automatica():
 
     status_container.update(
         label=(
-            "⚙️ [3/4] Procesando cruce secuencial (Predio_Viv -> Cliente) para"
+            "⚙️ [3/4] Procesando cruce (Predio_Viv -> Cliente) para"
             f" {total_registros:,} registros..."
         ),
         state="running",
