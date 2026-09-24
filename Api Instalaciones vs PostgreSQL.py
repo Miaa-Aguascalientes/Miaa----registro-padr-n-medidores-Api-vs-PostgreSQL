@@ -69,9 +69,11 @@ if "logs" not in st.session_state:
       f"[{hora_actual_mx}] Sistema inicializado. Listo para operar."
   ]
 
-# Control para el temporizador automático de 15 minutos (900 segundos)
 if "ultimo_tiempo_ejecucion" not in st.session_state:
   st.session_state.ultimo_tiempo_ejecucion = time.time()
+
+if "intervalo_minutos" not in st.session_state:
+  st.session_state.intervalo_minutos = 15
 
 
 def agregar_log(mensaje):
@@ -180,7 +182,11 @@ def cargar_datos_api():
 # 4. PROCESO DE SINCRONIZACIÓN DIRECTO
 # ==========================================
 def ejecutar_proceso_sincronizacion(es_automatico=False):
-  tipo_ejec = "automático (cada 15 min)" if es_automatico else "manual"
+  tipo_ejec = (
+      f"automático (cada {st.session_state.intervalo_minutos} min)"
+      if es_automatico
+      else "manual"
+  )
   agregar_log(
       f"🚀 Iniciando proceso de sincronización ({tipo_ejec}) con la API..."
   )
@@ -449,28 +455,27 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
         f"✅ [Paso 3/3] ¡Sincronización completada! Se procesaron"
         f" {actualizados:,} registros."
     )
-    # Actualizamos la marca de tiempo de la última ejecución exitosa
     st.session_state.ultimo_tiempo_ejecucion = time.time()
   except Exception as e:
     agregar_log(f"❌ Error crítico en base de datos: {e}")
 
 
 # ==========================================
-# 5. VERIFICADOR AUTOMÁTICO DE TIEMPO (CADA 15 MINUTOS)
+# 5. VERIFICADOR AUTOMÁTICO DE TIEMPO DINÁMICO
 # ==========================================
-# Cada vez que la app carga o se interactúa, revisa si ya pasaron 900 segundos (15 mins)
-TIEMPO_INTERVALO = 900  # 15 minutos en segundos
+TIEMPO_INTERVALO = st.session_state.intervalo_minutos * 60
 tiempo_actual = time.time()
 
 if (tiempo_actual - st.session_state.ultimo_tiempo_ejecucion) >= TIEMPO_INTERVALO:
   agregar_log(
-      "⏰ Han pasado 15 minutos. Ejecutando sincronización automática..."
+      f"⏰ Se cumplió el intervalo de {st.session_state.intervalo_minutos}"
+      " minutos. Ejecutando sincronización automática..."
   )
   ejecutar_proceso_sincronizacion(es_automatico=True)
 
 
 # ==========================================
-# 6. BARRA LATERAL (SIDEBAR)
+# 6. BARRA LATERAL (SIDEBAR CON SELECTOR DE TIEMPO)
 # ==========================================
 with st.sidebar:
   st.markdown("<h2>⚙️ Configuración</h2>", unsafe_allow_html=True)
@@ -483,11 +488,29 @@ with st.sidebar:
     st.rerun()
 
   st.markdown("---")
+  st.markdown("#### ⏱️ Intervalo Automático")
+  minutos_elegidos = st.number_input(
+      "Minutos entre ejecuciones:",
+      min_value=1,
+      max_value=1440,
+      value=st.session_state.intervalo_minutos,
+      step=1,
+      key="input_intervalo_minutos",
+  )
+
+  if minutos_elegidos != st.session_state.intervalo_minutos:
+    st.session_state.intervalo_minutos = minutos_elegidos
+    agregar_log(
+        f"⚙️ Intervalo automático actualizado a {minutos_elegidos} minuto(s)."
+    )
+    st.rerun()
+
+  st.markdown("---")
   st.markdown("#### Información del Sistema")
   tiempo_restante = max(
       0,
       int(
-          TIEMPO_INTERVALO
+          (st.session_state.intervalo_minutos * 60)
           - (time.time() - st.session_state.ultimo_tiempo_ejecucion)
       ),
   )
