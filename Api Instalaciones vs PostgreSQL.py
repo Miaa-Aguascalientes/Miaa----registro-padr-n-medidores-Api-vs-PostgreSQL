@@ -1,12 +1,10 @@
 from datetime import datetime, timedelta
-import threading
 import time
 from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 from sqlalchemy import create_engine, text
 import streamlit as st
-from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 # ==========================================
 # 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS
@@ -50,7 +48,7 @@ st.markdown(
             font-family: 'Courier New', Courier, monospace;
             padding: 15px;
             border-radius: 6px;
-            height: 220px;
+            height: 250px;
             overflow-y: scroll;
             font-size: 13px;
             line-height: 1.4;
@@ -61,38 +59,22 @@ st.markdown(
 )
 
 # ==========================================
-# 2. GESTIÓN DE ESTADOS Y HILO SEGURO
+# 2. GESTIÓN DE ESTADOS
 # ==========================================
 ZONA_MEXICO = ZoneInfo("America/Mexico_City")
 
 if "logs" not in st.session_state:
   hora_actual_mx = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs = [
-      f"[{hora_actual_mx}] Sistema inicializado en segundo plano. Listo para"
-      " operar."
+      f"[{hora_actual_mx}] Sistema inicializado. Listo para operar."
   ]
 
-if "is_syncing" not in st.session_state:
-  st.session_state.is_syncing = False
 
-if "sync_progress" not in st.session_state:
-  st.session_state.sync_progress = 0.0  # 0.0 a 1.0
-
-if "sync_status_text" not in st.session_state:
-  st.session_state.sync_status_text = "Sistema en reposo."
-
-log_lock = threading.Lock()
-
-
-def actualizar_estado_proceso(progreso, texto, log_msj=None):
-  with log_lock:
-    st.session_state.sync_progress = float(progreso)
-    st.session_state.sync_status_text = str(texto)
-    if log_msj:
-      timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
-      st.session_state.logs.insert(0, f"[{timestamp}] {log_msj}")
-      if len(st.session_state.logs) > 150:
-        st.session_state.logs.pop()
+def agregar_log(mensaje):
+  timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
+  st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
+  if len(st.session_state.logs) > 150:
+    st.session_state.logs.pop()
 
 
 # ==========================================
@@ -191,356 +173,265 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. PROCESO EN SEGUNDO PLANO (HILO SEGURO)
+# 4. PROCESO DIRECTO SIN TABLAS TEMPORALES
 # ==========================================
-def ejecutar_sincronizacion_background(
-    api_user, api_pass, pg_user, pg_pass, pg_host, pg_port, pg_db
-):
-  if st.session_state.is_syncing:
-    return
-  st.session_state.is_syncing = True
+def ejecutar_proceso_sincronizacion():
+  agregar_log("🚀 Iniciando proceso de sincronización directa con la API...")
 
   try:
-    actualizar_estado_proceso(
-        0.1,
-        "Conectando con la API de MIAA...",
-        "🔄 [Paso 1/4] Iniciando autenticación con la API de MIAA...",
+    usuario = st.secrets["api"]["usuario"]
+    password = st.secrets["api"]["password"]
+  except Exception as e:
+    agregar_log(f"❌ Error leyendo st.secrets: {e}")
+    st.error(f"Error en secretos: {e}")
+    return
+
+  # 1. Login API
+  agregar_log("🔄 [Paso 1/3] Conectando al login de MIAA...")
+  try:
+    res_login = requests.post(
+        url_login,
+        json={"username": usuario, "password": password},
+        headers={"Content-Type": "application/json"},
+        timeout=20,
     )
+  except Exception as e:
+    agregar_log(
+        f"❌ Error de red al conectar al login: {type(e).__name__} - {e}"
+    )
+    st.error(f"Error de red en Login: {e}")
+    return
 
-    try:
-      res_login = requests.post(
-          url_login,
-          json={"username": api_user, "password": api_pass},
-          headers={"Content-Type": "application/json"},
-          timeout=15,
-      )
-    except requests.exceptions.Timeout:
-      actualizar_estado_proceso(
-          0.0,
-          "Error: Timeout en login API",
-          "❌ Error crítico: La API de MIAA tardó demasiado en responder en el"
-          " login (Timeout).",
-      )
-      return
-    except Exception as ex_log:
-      actualizar_estado_proceso(
-          0.0,
-          f"Error de red: {ex_log}",
-          f"❌ Error de red al conectar con el login de la API: {ex_log}",
-      )
-      return
+  if res_login.status_code != 200:
+    agregar_log(f"❌ Falló la autenticación. Código: {res_login.status_code}")
+    st.error(f"Error de autenticación (HTTP {res_login.status_code})")
+    return
 
-    if res_login.status_code != 200:
-      actualizar_estado_proceso(
-          0.0,
-          f"Error HTTP {res_login.status_code} en Login",
-          f"❌ Error crítico: Falló la autenticación con la API (Código"
-          f" {res_login.status_code}).",
-      )
-      return
-
+  try:
     token = res_login.json().get("token") or res_login.json().get(
         "access_token"
     )
-    if not token:
-      actualizar_estado_proceso(
-          0.0,
-          "Error: Token no encontrado",
-          "❌ Error crítico: La respuesta del login no contiene token de acceso.",
-      )
-      return
+  except Exception:
+    token = None
 
-    actualizar_estado_proceso(
-        0.3,
-        "Descargando registros de instalaciones...",
-        "✅ Autenticación exitosa. Descargando registros de instalaciones"
-        " desde la API...",
-    )
+  if not token:
+    agregar_log("❌ No se pudo extraer el token de acceso.")
+    st.error("No se encontró token de acceso.")
+    return
 
-    try:
-      res_inst = requests.get(
-          url_instalaciones,
-          headers={
-              "Content-Type": "application/json",
-              "Authorization": f"Bearer {token}",
-          },
-          timeout=45,
-      )
-    except requests.exceptions.Timeout:
-      actualizar_estado_proceso(
-          0.0,
-          "Error: Timeout descargando instalaciones",
-          "❌ Error crítico: La API tardó demasiado tiempo en devolver las"
-          " instalaciones (Timeout).",
-      )
-      return
-    except Exception as ex_inst:
-      actualizar_estado_proceso(
-          0.0,
-          f"Error descargando: {ex_inst}",
-          f"❌ Error al solicitar las instalaciones a la API: {ex_inst}",
-      )
-      return
+  agregar_log("✅ Autenticación exitosa. Descargando instalaciones...")
 
-    if res_inst.status_code != 200:
-      actualizar_estado_proceso(
-          0.0,
-          f"Error HTTP {res_inst.status_code} en instalaciones",
-          f"❌ Error crítico: La API devolvió código HTTP"
-          f" {res_inst.status_code} al pedir instalaciones.",
-      )
-      return
-
-    data = res_inst.json()
-    if isinstance(data, list):
-      df = pd.DataFrame(data)
-    elif isinstance(data, dict):
-      df = pd.DataFrame()
-      for key in ["data", "result", "items", "instalaciones"]:
-        if key in data and isinstance(data[key], list):
-          df = pd.DataFrame(data[key])
-          break
-      if df.empty:
-        df = pd.DataFrame([data])
-    else:
-      df = pd.DataFrame()
-
-    if df.empty:
-      actualizar_estado_proceso(
-          0.0, "Error: Dataset vacío", "❌ Error: La API devolvió datos vacíos."
-      )
-      return
-
-    actualizar_estado_proceso(
-        0.5,
-        f"Procesando {len(df):,} registros descargados...",
-        f"📦 Registros obtenidos de la API: {len(df):,}. Limpiando columnas y"
-        " armando Predio_Viv...",
+  # 2. Descarga de instalaciones
+  try:
+    res_inst = requests.get(
+        url_instalaciones,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        timeout=45,
     )
-
-    cols_a_remover = [
-        c
-        for c in df.columns
-        if any(
-            term in c.lower() for term in ["foto", "imagen", "img", "fotografia"]
-        )
-    ]
-    df = df.drop(columns=cols_a_remover, errors="ignore")
-
-    col_api_predio = next(
-        (
-            c
-            for c in ["predio", "predioViv", "predio_viv", "numeroPredio"]
-            if c in df.columns
-        ),
-        None,
-    )
-    col_api_unidad = next(
-        (c for c in ["unidad", "unidadViv", "unidad_viv"] if c in df.columns),
-        None,
-    )
-
-    if col_api_predio:
-
-      def construir_predio_viv(row):
-        p = row[col_api_predio]
-        if pd.isna(p) or str(p).strip().lower() in ["none", "nan", ""]:
-          return ""
-        p_str = str(p).strip()
-        u = (
-            row[col_api_unidad]
-            if col_api_unidad and pd.notna(row[col_api_unidad])
-            else 0
-        )
-        u_str = str(u).strip()
-        if u_str.lower() in ["none", "nan", ""]:
-          u_str = "0"
-        return f"{p_str}-{u_str}"
-
-      df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
-
-    actualizar_estado_proceso(
-        0.7,
-        "Creando tabla temporal en PostgreSQL...",
-        "🔄 [Paso 2/4] Conectando con PostgreSQL y creando tabla temporal"
-        " (temp_api_staging)...",
-    )
-    connection_string = f"postgresql+psycopg2://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}"
-    engine_pg = create_engine(connection_string)
-
-    df_staging = pd.DataFrame()
-    col_predio = next(
-        (
-            c
-            for c in ["Predio_Viv", "predioViv", "predio_viv", "predio"]
-            if c in df.columns
-        ),
-        None,
-    )
-    col_cliente = next(
-        (
-            c
-            for c in ["numeroCliente", "numero_cliente", "cliente", "Cliente"]
-            if c in df.columns
-        ),
-        None,
-    )
-    col_serie = next(
-        (c for c in ["serie", "Serie", "numeroSerie"] if c in df.columns), None
-    )
-    col_colonia = next((c for c in ["colonia", "Colonia"] if c in df.columns), None)
-    col_domicilio = next(
-        (c for c in ["domicilio", "Domicilio", "direccion"] if c in df.columns),
-        None,
-    )
-    col_instalador = next(
-        (c for c in ["usuarioNombre", "instalador"] if c in df.columns), None
-    )
-    col_ext = next((c for c in ["usuarioExterno"] if c in df.columns), None)
-    col_lec = next(
-        (c for c in ["lecturaActual", "lectura"] if c in df.columns), None
-    )
-    col_freg = next((c for c in ["fechaRegistro"] if c in df.columns), None)
-    col_finst = next((c for c in ["fechaInstalacion"] if c in df.columns), None)
-
-    df_staging["api_predio"] = (
-        df[col_predio].astype(str).str.strip() if col_predio else ""
-    )
-    df_staging["api_cliente"] = (
-        df[col_cliente].astype(str).str.strip() if col_cliente else ""
-    )
-    df_staging["api_serie"] = (
-        df[col_serie].astype(str).str.strip() if col_serie else None
-    )
-    df_staging["api_colonia"] = (
-        df[col_colonia].astype(str).str.strip() if col_colonia else None
-    )
-    df_staging["api_domicilio"] = (
-        df[col_domicilio].astype(str).str.strip() if col_domicilio else None
-    )
-    df_staging["api_instalador"] = (
-        df[col_instalador].astype(str).str.strip() if col_instalador else None
-    )
-    df_staging["api_lectura"] = (
-        pd.to_numeric(df[col_lec], errors="coerce") if col_lec else None
-    )
-    df_staging["api_freg"] = (
-        pd.to_datetime(df[col_freg], errors="coerce") if col_freg else None
-    )
-    df_staging["api_finst"] = (
-        pd.to_datetime(df[col_finst], errors="coerce") if col_finst else None
-    )
-
-    if col_ext:
-
-      def map_ext(val):
-        if val in [True, 1, "1", "true", "True", "YES", "yes", "S", "s"]:
-          return "Externo"
-        return "MIAA"
-
-      df_staging["api_tipo"] = df[col_ext].apply(map_ext)
-    else:
-      df_staging["api_tipo"] = "MIAA"
-
-    with engine_pg.begin() as conn:
-      actualizar_estado_proceso(
-          0.85,
-          "Insertando en tabla staging (temp_api_staging)...",
-          "💾 Subiendo registros en bloques a 'temp_api_staging' en PostgreSQL...",
-      )
-      df_staging.to_sql(
-          "temp_api_staging",
-          con=conn,
-          if_exists="replace",
-          index=False,
-          method="multi",
-          chunksize=5000,
-      )
-
-    actualizar_estado_proceso(
-        0.95,
-        "Ejecutando UPDATE masivo en base de datos...",
-        "🔄 [Paso 3/4] Ejecutando sentencia UPDATE masiva en PostgreSQL (cruces"
-        " por Predio o Cliente)...",
-    )
-    query_update = text("""
-            UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
-            SET 
-                "_Serie" = COALESCE(NULLIF(u."_Serie"::text, ''), t.api_serie),
-                "_Colonia" = COALESCE(NULLIF(u."_Colonia"::text, ''), t.api_colonia),
-                "_Domicilio" = COALESCE(NULLIF(u."_Domicilio"::text, ''), t.api_domicilio),
-                "_Instalador" = COALESCE(NULLIF(u."_Instalador"::text, ''), t.api_instalador),
-                "_Tipo_instalador" = COALESCE(NULLIF(u."_Tipo_instalador"::text, ''), t.api_tipo),
-                "_Lectura_actual" = COALESCE(u."_Lectura_actual", t.api_lectura),
-                "_Fecha_registro" = COALESCE(u."_Fecha_registro", t.api_freg),
-                "_Fecha_instalacion" = COALESCE(u."_Fecha_instalacion", t.api_finst)
-            FROM temp_api_staging AS t
-            WHERE 
-                (u."Predio_Viv" IS NOT NULL AND TRIM(u."Predio_Viv"::text) != '' AND u."Predio_Viv"::text = t.api_predio)
-                OR 
-                (u."Cliente" IS NOT NULL AND TRIM(u."Cliente"::text) != '' AND u."Cliente"::text = t.api_cliente);
-        """)
-
-    with engine_pg.begin() as conn:
-      conn.execute(query_update)
-
-    actualizar_estado_proceso(
-        1.0,
-        "¡Sincronización completada con éxito!",
-        "✅ [Paso 4/4] Sincronización completada exitosamente en la base de"
-        " datos!",
-    )
-
   except Exception as e:
-    actualizar_estado_proceso(
-        0.0, f"Error crítico: {e}", f"❌ Excepción crítica en el proceso: {e}"
-    )
-  finally:
-    st.session_state.is_syncing = False
+    agregar_log(f"❌ Error al descargar instalaciones: {e}")
+    st.error(f"Error al descargar instalaciones: {e}")
+    return
 
+  if res_inst.status_code != 200:
+    agregar_log(f"❌ Error HTTP en instalaciones: {res_inst.status_code}")
+    st.error(f"La API devolvió el código HTTP {res_inst.status_code}")
+    return
 
-def disparar_hilo():
-  if not st.session_state.is_syncing:
-    with log_lock:
-      timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
-      st.session_state.logs.insert(
-          0, f"[{timestamp}] 🚀 Hilo de ejecución en segundo plano iniciado."
+  try:
+    data = res_inst.json()
+  except Exception as e:
+    agregar_log(f"❌ Error al decodificar JSON: {e}")
+    st.error("Error al procesar la respuesta de la API.")
+    return
+
+  if isinstance(data, list):
+    df = pd.DataFrame(data)
+  elif isinstance(data, dict):
+    df = pd.DataFrame()
+    for key in ["data", "result", "items", "instalaciones"]:
+      if key in data and isinstance(data[key], list):
+        df = pd.DataFrame(data[key])
+        break
+    if df.empty:
+      df = pd.DataFrame([data])
+  else:
+    df = pd.DataFrame()
+
+  if df.empty:
+    agregar_log("❌ El dataset devuelto por la API está vacío.")
+    st.warning("La API no devolvió registros.")
+    return
+
+  agregar_log(
+      f"📦 Registros obtenidos de la API: {len(df):,}. Mapeando campos..."
+  )
+
+  # Limpieza de columnas innecesarias
+  cols_a_remover = [
+      c
+      for c in df.columns
+      if any(
+          term in c.lower() for term in ["foto", "imagen", "img", "fotografia"]
       )
+  ]
+  df = df.drop(columns=cols_a_remover, errors="ignore")
 
-    # LEEMOS LOS SECRETOS AQUÍ EN EL HILO PRINCIPAL ANTES DE ARRANCAR
-    api_user = st.secrets["api"]["usuario"]
-    api_pass = st.secrets["api"]["password"]
-    pg = st.secrets["postgres"]
+  col_api_predio = next(
+      (
+          c
+          for c in ["predio", "predioViv", "predio_viv", "numeroPredio"]
+          if c in df.columns
+      ),
+      None,
+  )
+  col_api_unidad = next(
+      (c for c in ["unidad", "unidadViv", "unidad_viv"] if c in df.columns),
+      None,
+  )
 
-    hilo = threading.Thread(
-        target=ejecutar_sincronizacion_background,
-        args=(
-            api_user,
-            api_pass,
-            pg["user"],
-            pg["password"],
-            pg["host"],
-            pg["port"],
-            pg["database"],
-        ),
-        daemon=True,
+  if col_api_predio:
+
+    def construir_predio_viv(row):
+      p = row[col_api_predio]
+      if pd.isna(p) or str(p).strip().lower() in ["none", "nan", ""]:
+        return ""
+      p_str = str(p).strip()
+      u = (
+          row[col_api_unidad]
+          if col_api_unidad and pd.notna(row[col_api_unidad])
+          else 0
+      )
+      u_str = str(u).strip()
+      if u_str.lower() in ["none", "nan", ""]:
+        u_str = "0"
+      return f"{p_str}-{u_str}"
+
+    df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
+
+  # Mapeo a variables locales para inserción directa
+  col_predio = next(
+      (
+          c
+          for c in ["Predio_Viv", "predioViv", "predio_viv", "predio"]
+          if c in df.columns
+      ),
+      None,
+  )
+  col_cliente = next(
+      (
+          c
+          for c in ["numeroCliente", "numero_cliente", "cliente", "Cliente"]
+          if c in df.columns
+      ),
+      None,
+  )
+  col_serie = next(
+      (c for c in ["serie", "Serie", "numeroSerie"] if c in df.columns), None
+  )
+  col_colonia = next((c for c in ["colonia", "Colonia"] if c in df.columns), None)
+  col_domicilio = next(
+      (c for c in ["domicilio", "Domicilio", "direccion"] if c in df.columns),
+      None,
+  )
+  col_instalador = next(
+      (c for c in ["usuarioNombre", "instalador"] if c in df.columns), None
+  )
+  col_ext = next((c for c in ["usuarioExterno"] if c in df.columns), None)
+  col_lec = next(
+      (c for c in ["lecturaActual", "lectura"] if c in df.columns), None
+  )
+  col_freg = next((c for c in ["fechaRegistro"] if c in df.columns), None)
+  col_finst = next((c for c in ["fechaInstalacion"] if c in df.columns), None)
+
+  agregar_log(
+      "🔄 [Paso 2/3] Conectando a PostgreSQL para actualización directa por"
+      " lotes..."
+  )
+  try:
+    engine_pg = obtener_motor_postgres()
+  except Exception as e:
+    agregar_log(f"❌ Error al conectar a PostgreSQL: {e}")
+    st.error(f"Error conectando a PostgreSQL: {e}")
+    return
+
+  # Consulta SQL optimizada directa con parámetros (Sin tablas temporales)
+  query_update_directo = text("""
+        UPDATE "Usuarios"."usuarios_miaa_conmedidor"
+        SET 
+            "_Serie" = COALESCE(NULLIF("_Serie"::text, ''), :serie),
+            "_Colonia" = COALESCE(NULLIF("_Colonia"::text, ''), :colonia),
+            "_Domicilio" = COALESCE(NULLIF("_Domicilio"::text, ''), :domicilio),
+            "_Instalador" = COALESCE(NULLIF("_Instalador"::text, ''), :instalador),
+            "_Tipo_instalador" = COALESCE(NULLIF("_Tipo_instalador"::text, ''), :tipo_inst),
+            "_Lectura_actual" = COALESCE("_Lectura_actual", :lectura),
+            "_Fecha_registro" = COALESCE("_Fecha_registro", :freg),
+            "_Fecha_instalacion" = COALESCE("_Fecha_instalacion", :finst)
+        WHERE 
+            (:predio != '' AND "Predio_Viv"::text = :predio)
+            OR 
+            (:cliente != '' AND "Cliente"::text = :cliente);
+    """)
+
+  actualizados = 0
+  total_filas = len(df)
+
+  try:
+    with engine_pg.begin() as conn:
+      for index, row in df.iterrows():
+        p_val = str(row[col_predio]).strip() if col_predio and pd.notna(row[col_predio]) else ""
+        c_val = str(row[col_cliente]).strip() if col_cliente and pd.notna(row[col_cliente]) else ""
+
+        if not p_val and not c_val:
+          continue
+
+        s_val = str(row[col_serie]).strip() if col_serie and pd.notna(row[col_serie]) else None
+        col_val = str(row[col_colonia]).strip() if col_colonia and pd.notna(row[col_colonia]) else None
+        dom_val = str(row[col_domicilio]).strip() if col_domicilio and pd.notna(row[col_domicilio]) else None
+        inst_val = str(row[col_instalador]).strip() if col_instalador and pd.notna(row[col_instalador]) else None
+        
+        # Tipo de instalador
+        tipo_val = "MIAA"
+        if col_ext and pd.notna(row[col_ext]):
+          val_ext = row[col_ext]
+          if val_ext in [True, 1, "1", "true", "True", "YES", "yes", "S", "s"]:
+            tipo_val = "Externo"
+
+        lec_val = pd.to_numeric(row[col_lec], errors="coerce") if col_lec and pd.notna(row[col_lec]) else None
+        freg_val = pd.to_datetime(row[col_freg], errors="coerce") if col_freg and pd.notna(row[col_freg]) else None
+        finst_val = pd.to_datetime(row[col_finst], errors="coerce") if col_finst and pd.notna(row[col_finst]) else None
+
+        conn.execute(
+            query_update_directo,
+            {
+                "predio": p_val,
+                "cliente": c_val,
+                "serie": s_val,
+                "colonia": col_val,
+                "domicilio": dom_val,
+                "instalador": inst_val,
+                "tipo_inst": tipo_val,
+                "lectura": lec_val,
+                "freg": freg_val,
+                "finst": finst_val,
+            },
+        )
+        actualizados += 1
+
+    agregar_log(
+        f"✅ [Paso 3/3] ¡Sincronización directa completada! Se procesaron {actualizados:,} registros en la base de datos."
     )
-    add_script_run_ctx(hilo)
-    hilo.start()
+    st.success("¡Proceso finalizado correctamente sin tablas temporales!")
+  except Exception as e:
+    agregar_log(f"❌ Error crítico en la ejecución directa: {e}")
+    st.error(f"Error en la base de datos: {e}")
 
 
 # ==========================================
-# 5. CONFIGURACIÓN DE ESTADOS TEMPORIZADOR
-# ==========================================
-if "is_running_timer" not in st.session_state:
-  st.session_state.is_running_timer = False
-if "next_run_time" not in st.session_state:
-  st.session_state.next_run_time = None
-if "total_seconds_interval" not in st.session_state:
-  st.session_state.total_seconds_interval = 300
-
-# ==========================================
-# 6. BARRA LATERAL (SIDEBAR)
+# 5. BARRA LATERAL (SIDEBAR)
 # ==========================================
 with st.sidebar:
   st.markdown("<h2>⚙️ Configuración</h2>", unsafe_allow_html=True)
@@ -548,148 +439,40 @@ with st.sidebar:
 
   st.markdown("#### Ejecución Manual")
   if st.button("🚀 Ejecutar Ahora", type="primary", use_container_width=True):
-    if not st.session_state.is_syncing:
-      disparar_hilo()
-      st.rerun()
-    else:
-      st.warning(
-          "El sistema ya se encuentra ejecutando un proceso de inserción."
-      )
+    with st.spinner("Sincronizando de forma directa... Por favor espera."):
+      ejecutar_proceso_sincronizacion()
+    st.rerun()
 
   st.markdown("---")
-  st.markdown("#### Ejecución Periódica")
-
-  opciones_intervalo = {
-      "Cada 1 minuto": 60,
-      "Cada 5 minutos": 300,
-      "Cada 15 minutos": 900,
-      "Cada 30 minutos": 1800,
-      "Cada hora": 3600,
-  }
-  intervalo_sel = st.selectbox(
-      "Seleccionar Intervalo", list(opciones_intervalo.keys())
+  st.markdown("#### Información del Sistema")
+  st.markdown(
+      "<p style='font-size:12px; color:#94a3b8;'>El código ha sido refactorizado"
+      " para eliminar tablas temporales y realizar actualizaciones directas"
+      " optimizadas.</p>",
+      unsafe_allow_html=True,
   )
-  total_segundos = opciones_intervalo[intervalo_sel]
-
-  col_sb1, col_sb2 = st.columns(2)
-  with col_sb1:
-    btn_iniciar = st.button("INICIAR", type="primary", use_container_width=True)
-  with col_sb2:
-    btn_parar = st.button("PARAR", type="secondary", use_container_width=True)
-
-  if btn_iniciar:
-    st.session_state.is_running_timer = True
-    st.session_state.total_seconds_interval = total_segundos
-    st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
-        seconds=total_segundos
-    )
-    with log_lock:
-      ts = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
-      st.session_state.logs.insert(
-          0, f"[{ts}] Temporizador automático activado ({intervalo_sel.lower()})."
-      )
-    st.success("¡Temporizador activo!")
-    st.rerun()
-
-  if btn_parar:
-    st.session_state.is_running_timer = False
-    st.session_state.next_run_time = None
-    with log_lock:
-      ts = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
-      st.session_state.logs.insert(
-          0, f"[{ts}] Temporizador automático detenido."
-      )
-    st.warning("Temporizador detenido.")
-    st.rerun()
 
 # ==========================================
-# 7. TÍTULO PRINCIPAL
+# 6. TÍTULO PRINCIPAL
 # ==========================================
 st.markdown(
     "<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True
 )
 st.markdown("---")
 
+# ==========================================
+# 7. CONSOLA DE REGISTROS
+# ==========================================
+st.markdown("#### 🖥️ Consola de Registros en Tiempo Real")
+logs_html = "<br>".join(st.session_state.logs)
+st.markdown(
+    f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
+)
+
+st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
 
 # ==========================================
-# 8. FRAGMENTO REACTIVO EN VIVO (CONSOLA + BARRA DE PROGRESO REAL)
-# ==========================================
-@st.fragment(run_every=0.5)
-def renderizar_consola_y_progreso():
-  if st.session_state.is_running_timer and st.session_state.next_run_time:
-    ahora_mx = datetime.now(ZONA_MEXICO)
-    if ahora_mx >= st.session_state.next_run_time:
-      if not st.session_state.is_syncing:
-        disparar_hilo()
-      st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
-          seconds=st.session_state.total_seconds_interval
-      )
-
-  if st.session_state.is_running_timer and st.session_state.next_run_time:
-    ahora_mx = datetime.now(ZONA_MEXICO)
-    restante = max(
-        0, int((st.session_state.next_run_time - ahora_mx).total_seconds())
-    )
-    total = st.session_state.total_seconds_interval
-    progreso_timer = min(1.0, max(0.0, (total - restante) / total))
-    mins, secs = divmod(restante, 60)
-    st.markdown(
-        f"<p style='font-size: 13px; color: #38bdf8; font-weight: bold;"
-        f" margin-bottom: 2px;'>⏱️ Próxima ejecución automática en:"
-        f" {mins:02d}:{secs:02d}</p>",
-        unsafe_allow_html=True,
-    )
-    st.progress(progreso_timer)
-  else:
-    st.markdown(
-        "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
-        " margin-bottom: 2px;'>⏸️ Temporizador inactivo. Usa 'Ejecutar Ahora'"
-        " en la barra lateral.</p>",
-        unsafe_allow_html=True,
-    )
-    st.progress(0.0)
-
-  st.markdown("#### 🖥️ Consola de Registros en Tiempo Real")
-  with log_lock:
-    logs_html = "<br>".join(st.session_state.logs)
-  st.markdown(
-      f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
-  )
-
-  st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-  current_prog = st.session_state.sync_progress
-  current_text = st.session_state.sync_status_text
-
-  if st.session_state.is_syncing:
-    st.markdown(
-        f"<p style='font-size: 13px; color: #f59e0b; font-weight: bold;"
-        f" margin-bottom: 4px;'>🔄 Estado de Inserción: {current_text}"
-        f" ({int(current_prog * 100)}%)</p>",
-        unsafe_allow_html=True,
-    )
-  elif current_prog >= 1.0:
-    st.markdown(
-        f"<p style='font-size: 13px; color: #22c55e; font-weight: bold;"
-        f" margin-bottom: 4px;'>✅ Estado de Inserción: {current_text}"
-        " (100%)</p>",
-        unsafe_allow_html=True,
-    )
-  else:
-    st.markdown(
-        f"<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
-        f" margin-bottom: 4px;'>💤 Estado de Inserción: {current_text}</p>",
-        unsafe_allow_html=True,
-    )
-
-  st.progress(current_prog)
-
-
-renderizar_consola_y_progreso()
-
-st.markdown("---")
-
-# ==========================================
-# 9. INDICADORES Y PESTAÑAS
+# 8. INDICADORES Y PESTAÑAS
 # ==========================================
 total_registros_db = obtener_total_registros()
 total_con_serie = obtener_total_con_serie()
@@ -805,13 +588,9 @@ with tab1:
               conn_up.execute(query_update_masivo)
               conn_up.commit()
 
-            with log_lock:
-              ts = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
-              st.session_state.logs.insert(
-                  0,
-                  f"[{ts}] Limpieza masiva ejecutada en campos:"
-                  f" {campos_a_limpiar_masivo}",
-              )
+            agregar_log(
+                f"Limpieza masiva ejecutada en campos: {campos_a_limpiar_masivo}"
+            )
             st.success("¡Los campos seleccionados han sido vaciados con éxito!")
             st.rerun()
           except Exception as e:
