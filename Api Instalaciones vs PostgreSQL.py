@@ -57,6 +57,8 @@ st.markdown(
             font-weight: bold;
             color: #f8fafc;
         }
+        
+        /* Consola y Tarjeta de Limpieza con idéntica altura y diseño alineado */
         .terminal-box {
             background-color: #0b0f19;
             border: 1px solid #22c55e;
@@ -64,10 +66,21 @@ st.markdown(
             font-family: 'Courier New', Courier, monospace;
             padding: 15px;
             border-radius: 6px;
-            height: 480px;
+            height: 505px;
             overflow-y: scroll;
             font-size: 13px;
             line-height: 1.4;
+        }
+        
+        .equal-height-card {
+            background-color: #0e1322;
+            border: 1px solid #334155;
+            padding: 20px;
+            border-radius: 8px;
+            height: 567px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
         }
     </style>
 """,
@@ -470,7 +483,7 @@ def procesar_cruce_datos(
   df_conmedidor_pg["_Serie"] = nuevas_series
   df_conmedidor_pg["_Colonia"] = nuevas_colonias
   df_conmedidor_pg["_Domicilio"] = nuevos_domicilios
-  df_conmedidor_pg["_Instalador"] = nuevas_instaladores
+  df_conmedidor_pg["_Instalador"] = nuevos_instaladores
   df_conmedidor_pg["_Tipo_instalador"] = nuevos_tipos
 
   lecturas_limpias = []
@@ -870,7 +883,7 @@ def renderizar_progreso_y_consola_y_limpieza():
     st.markdown(
         "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
         " margin-bottom: 4px;'>⏸️ Temporizador inactivo. Haz clic en INICIAR"
-        " en la barra lateral para activar el ciclo automático alineado al"
+        " en la barra lateral para activar el ciclo automático alinéado al"
         " reloj.</p>",
         unsafe_allow_html=True,
     )
@@ -888,13 +901,22 @@ def renderizar_progreso_y_consola_y_limpieza():
     )
 
   with col_limpieza:
-    with st.container(border=True):
+    st.markdown(
+        "#### &nbsp;"
+    )  # Espaciador invisible para alinear títulos perfectamente con la consola
+    with st.container():
       st.markdown(
-          "#### 🧹 Limpieza Masiva de Campos (Sin eliminar registros)"
-      )
-      st.markdown(
-          "Selecciona las columnas cuyos datos deseas **vaciar por completo"
-          " en toda la tabla** a la vez. Las filas se mantendrán intactas."
+          """
+            <div class="equal-height-card">
+                <div>
+                    <h4 style="margin-top: 0; color: #f8fafc; font-size: 18px; display: flex; align-items: center;">
+                        🧹 <span style="margin-left: 8px;">Limpieza Masiva de Campos (Sin eliminar registros)</span>
+                    </h4>
+                    <p style="font-size: 13px; color: #94a3b8; margin-bottom: 15px;">
+                        Selecciona las columnas cuyos datos deseas <b>vaciar por completo en toda la tabla</b> a la vez. Las filas se mantendrán intactas.
+                    </p>
+            """,
+          unsafe_allow_html=True,
       )
 
       campos_disponibles = [
@@ -921,9 +943,7 @@ def renderizar_progreso_y_consola_y_limpieza():
           key="chk_confirmar_masivo",
       )
 
-      st.markdown(
-          "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
-      )
+      st.markdown("</div>", unsafe_allow_html=True)
 
       if st.button(
           "Ejecutar Limpieza Masiva",
@@ -964,6 +984,8 @@ def renderizar_progreso_y_consola_y_limpieza():
             st.rerun()
           except Exception as e:
             st.error(f"Error al ejecutar la limpieza masiva: {e}")
+
+      st.markdown("</div>", unsafe_allow_html=True)
 
 
 renderizar_progreso_y_consola_y_limpieza()
