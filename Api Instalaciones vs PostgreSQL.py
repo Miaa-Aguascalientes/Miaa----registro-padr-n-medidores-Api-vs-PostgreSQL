@@ -534,6 +534,7 @@ tab1, tab2 = st.tabs([
 total_registros_db = obtener_total_registros()
 total_con_serie = obtener_total_con_serie()
 df_filtrado = cargar_datos_api()
+total_registros_api = len(df_filtrado) if not df_filtrado.empty else 0
 
 with tab1:
   st.markdown(
@@ -573,10 +574,10 @@ with tab1:
       st.markdown(
           f"""
                 <div class="metric-card">
-                    <div class="metric-icon-box" style="color: #f59e0b;"><i class="fa-solid fa-bolt"></i></div>
+                    <div class="metric-icon-box" style="color: #f59e0b;"><i class="fa-solid fa-cloud-arrow-down"></i></div>
                     <div class="metric-content">
-                        <div class="metric-title">Rendimiento</div>
-                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Alta Velocidad</div>
+                        <div class="metric-title">Registros en la API</div>
+                        <div class="metric-value">{total_registros_api:,}</div>
                     </div>
                 </div>
             """,
