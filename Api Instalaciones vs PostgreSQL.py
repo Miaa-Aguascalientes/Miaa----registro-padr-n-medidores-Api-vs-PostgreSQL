@@ -68,6 +68,9 @@ if "logs" not in st.session_state:
       f"[{hora_actual_mx}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
   ]
 
+if "ejecutando_proceso" not in st.session_state:
+  st.session_state.ejecutando_proceso = False
+
 
 def agregar_log(mensaje):
   timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
@@ -133,9 +136,11 @@ def cargar_pagina_usuarios_db(limit=50, offset=0):
     return pd.DataFrame()
 
 
-@st.cache_data(ttl=300)
-def cargar_datos_api():
+def cargar_datos_api_con_logs():
   try:
+    agregar_log(
+        "🔄 Conectando con la API de MIAA (Solicitando credenciales)..."
+    )
     usuario = st.secrets["api"]["usuario"]
     password = st.secrets["api"]["password"]
     res_login = requests.post(
@@ -148,6 +153,9 @@ def cargar_datos_api():
           "access_token"
       )
       if token:
+        agregar_log(
+            "✅ Autenticación exitosa. Descargando registros de instalaciones..."
+        )
         res_inst = requests.get(
             url_instalaciones,
             headers={
@@ -169,6 +177,10 @@ def cargar_datos_api():
               df = pd.DataFrame([data])
 
           if not df.empty:
+            agregar_log(
+                f"📦 Registros brutos descargados de la API: {len(df):,}. Procesando"
+                " campos..."
+            )
             cols_a_remover = [
                 c
                 for c in df.columns
@@ -224,8 +236,10 @@ def cargar_datos_api():
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
           return df
+    agregar_log("❌ Error: Falló la autenticación o la consulta a la API.")
     return pd.DataFrame()
   except Exception as e:
+    agregar_log(f"❌ Excepción al conectar con la API: {e}")
     return pd.DataFrame()
 
 
@@ -233,21 +247,14 @@ def cargar_datos_api():
 # 4. CRUCE Y ACTUALIZACIÓN ULTRA RÁPIDA (VÍA SQL NATIVO)
 # ==========================================
 def ejecutar_sincronizacion_automatica():
-  agregar_log(
-      "🔄 Iniciando proceso: Conectando y autenticando con la API de MIAA..."
-  )
-  df_api = cargar_datos_api()
+  df_api = cargar_datos_api_con_logs()
 
   if df_api.empty:
-    agregar_log(
-        "❌ Error: No se pudo conectar de manera correcta a la API o no devolvió"
-        " datos."
-    )
     return False
 
   agregar_log(
-      f"✅ API consultada con éxito. Registros obtenidos: {len(df_api):,}. "
-      "Subiendo datos a tabla temporal de PostgreSQL..."
+      f"⚙️ Preparando {len(df_api):,} registros para subida masiva a tabla"
+      " temporal..."
   )
 
   try:
@@ -341,7 +348,10 @@ def ejecutar_sincronizacion_automatica():
       df_staging["api_tipo"] = "MIAA"
 
     with engine_pg.begin() as conn:
-      agregar_log("🔄 Procesando tabla temporal (Staging) en base de datos...")
+      agregar_log(
+          "💾 Subiendo bloques a la tabla temporal 'temp_api_staging' en"
+          " PostgreSQL..."
+      )
       df_staging.to_sql(
           "temp_api_staging",
           con=conn,
@@ -352,8 +362,8 @@ def ejecutar_sincronizacion_automatica():
       )
 
       agregar_log(
-          "🔄 Ejecutando cruce masivo y actualización en PostgreSQL por Predio"
-          " o Cliente..."
+          "⚡ Ejecutando actualización masiva SQL (Cruce por Predio_Viv o"
+          " Cliente)..."
       )
       query_update = text("""
                 UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
@@ -375,13 +385,12 @@ def ejecutar_sincronizacion_automatica():
 
       conn.execute(query_update)
       agregar_log(
-          "✅ ¡Proceso completado con éxito! Registros actualizados en"
-          " PostgreSQL."
+          "✅ ¡Sincronización masiva finalizada con éxito en la base de datos!"
       )
     return True
 
   except Exception as ex:
-    agregar_log(f"❌ Error durante la actualización SQL en PostgreSQL: {ex}")
+    agregar_log(f"❌ Error crítico en base de datos PostgreSQL: {ex}")
     return False
 
 
@@ -404,9 +413,7 @@ with st.sidebar:
 
   st.markdown("#### Ejecución Manual")
   if st.button("🚀 Ejecutar Ahora", type="primary", use_container_width=True):
-    # Ejecución directa sin st.spinner para permitir ver los logs en tiempo real
-    ejecutar_sincronizacion_automatica()
-    st.rerun()
+    st.session_state.ejecutando_proceso = True
 
   st.markdown("---")
   st.markdown("#### Ejecución Periódica")
@@ -456,10 +463,28 @@ st.markdown(
 )
 st.markdown("---")
 
+# ==========================================
+# 8. EJECUCIÓN CONTROLADA SI SE ACTIVA EL BOTÓN
+# ==========================================
+if st.session_state.ejecutando_proceso:
+  st.session_state.ejecutando_proceso = False
+  with st.status(
+      "🔄 Ejecutando sincronización, consulta la consola inferior...",
+      expanded=True,
+  ) as status:
+    ejecutar_sincronizacion_automatica()
+    status.update(
+        label="¡Proceso finalizado correctamente!",
+        state="complete",
+        expanded=False,
+    )
+  st.rerun()
 
 # ==========================================
-# 8. FRAGMENTO AISLADO CON BARRA DE PROGRESO, CONTADOR Y CONSOLA
+# 9. FRAGMENTO AISLADO CON BARRA DE PROGRESO Y CONSOLA
 # ==========================================
+
+
 @st.fragment(run_every=1)
 def renderizar_progreso_y_consola():
   if st.session_state.is_running and st.session_state.next_run_time:
@@ -510,15 +535,15 @@ renderizar_progreso_y_consola()
 st.markdown("---")
 
 # ==========================================
-# 9. OBTENCIÓN DE DATOS PARA INDICADORES
+# 10. OBTENCIÓN DE DATOS PARA INDICADORES
 # ==========================================
 total_registros_db = obtener_total_registros()
 total_con_serie = obtener_total_con_serie()
-df_filtrado = cargar_datos_api()
+df_filtrado = cargar_datos_api_con_logs()
 total_registros_api = len(df_filtrado) if not df_filtrado.empty else 0
 
 # ==========================================
-# 10. TARJETAS DE INDICADORES (A MERO ARRIBA)
+# 11. TARJETAS DE INDICADORES (A MERO ARRIBA)
 # ==========================================
 if total_registros_db > 0:
   c_m1, c_m2, c_m3 = st.columns(3)
@@ -565,7 +590,7 @@ if total_registros_db > 0:
   st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
 # ==========================================
-# 11. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
+# 12. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
 # ==========================================
 tab1, tab2 = st.tabs([
     "🚰 Panel Principal y Gestión",
