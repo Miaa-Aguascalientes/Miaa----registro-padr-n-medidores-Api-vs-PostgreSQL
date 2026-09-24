@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 from sqlalchemy import create_engine, text
@@ -57,16 +58,19 @@ st.markdown(
 )
 
 # ==========================================
-# 2. GESTIÓN DE LOGS (CONSOLA)
+# 2. GESTIÓN DE LOGS (CONSOLA - HORA MÉXICO)
 # ==========================================
+ZONA_MEXICO = ZoneInfo("America/Mexico_City")
+
 if "logs" not in st.session_state:
+  hora_actual_mx = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs = [
-      f"[{datetime.now().strftime('%H:%M:%S')}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
+      f"[{hora_actual_mx}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
   ]
 
 
 def agregar_log(mensaje):
-  timestamp = datetime.now().strftime("%H:%M:%S")
+  timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
   if len(st.session_state.logs) > 100:
     st.session_state.logs.pop()
@@ -435,7 +439,8 @@ with st.container(border=True):
 if btn_iniciar:
   st.session_state.is_running = True
   st.session_state.total_seconds_interval = total_segundos
-  st.session_state.next_run_time = datetime.now() + timedelta(
+  # Cálculo de próxima ejecución basado en la hora de México
+  st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
       seconds=total_segundos
   )
   agregar_log(
@@ -460,16 +465,16 @@ st.markdown("---")
 @st.fragment(run_every=1)
 def renderizar_progreso_y_consola():
   if st.session_state.is_running and st.session_state.next_run_time:
-    ahora = datetime.now()
-    if ahora >= st.session_state.next_run_time:
+    ahora_mx = datetime.now(ZONA_MEXICO)
+    if ahora_mx >= st.session_state.next_run_time:
       ejecutar_sincronizacion_automatica()
-      st.session_state.next_run_time = datetime.now() + timedelta(
+      st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
           seconds=st.session_state.total_seconds_interval
       )
 
   if st.session_state.is_running and st.session_state.next_run_time:
-    ahora = datetime.now()
-    restante = (st.session_state.next_run_time - ahora).total_seconds()
+    ahora_mx = datetime.now(ZONA_MEXICO)
+    restante = (st.session_state.next_run_time - ahora_mx).total_seconds()
     restante = max(0, int(restante))
 
     total_intervalo = st.session_state.total_seconds_interval
