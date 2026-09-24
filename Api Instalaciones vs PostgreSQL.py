@@ -510,7 +510,6 @@ def ejecutar_sincronizacion_automatica(
 ):
   def actualizar_progreso(valor_pct, mensaje):
     agregar_log(mensaje)
-    # Refrescar la consola en tiempo real en cada paso
     if consola_placeholder is not None:
       logs_html = "<br>".join(st.session_state.logs)
       consola_placeholder.markdown(
@@ -525,7 +524,7 @@ def ejecutar_sincronizacion_automatica(
       texto_estado_placeholder.markdown(
           f"🔄 **{mensaje}** ({int(valor_pct * 100)}%)"
       )
-    time.sleep(0.15)  # Pausa imperceptible para asegurar renderizado visual
+    time.sleep(0.1)
 
   # Paso 1: Inicio de conexión a la API (15%)
   actualizar_progreso(
@@ -555,12 +554,63 @@ def ejecutar_sincronizacion_automatica(
     engine_pg = obtener_motor_postgres()
 
     actualizar_progreso(
-        0.65,
-        "[PASO 4/6] Leyendo tabla completa de usuarios desde PostgreSQL...",
+        0.62,
+        "[PASO 4/6] Preparando lectura fraccionada de PostgreSQL...",
     )
-    df_conmedidor_pg = pd.read_sql(
-        'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg
+
+    with engine_pg.connect() as conn:
+      res_count = conn.execute(
+          text('SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor"')
+      )
+      total_est_pg = res_count.scalar() or 1
+
+    actualizar_progreso(
+        0.64,
+        f"[PASO 4/6] Tabla detectada con ~{total_est_pg:,} registros."
+        " Iniciando descarga por bloques...",
     )
+
+    chunk_size = 10000
+    chunks = []
+    pci_min = 0.65
+    pci_max = 0.79
+    total_chunks_estimados = max(
+        1,
+        (total_est_pg // chunk_size)
+        + (1 if total_est_pg % chunk_size > 0 else 0),
+    )
+
+    chunk_contador = 0
+    for chunk in pd.read_sql(
+        'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"',
+        con=engine_pg,
+        chunksize=chunk_size,
+    ):
+      chunks.append(chunk)
+      chunk_contador += 1
+
+      progreso_actual = pci_min + (
+          (chunk_contador / total_chunks_estimados) * (pci_max - pci_min)
+      )
+      progreso_actual = min(pci_max, progreso_actual)
+
+      filas_acumuladas = sum(len(c) for c in chunks)
+      actualizar_progreso(
+          round(progreso_actual, 3),
+          f"[PASO 4/6] Leyendo bloques de PostgreSQL... Bloque"
+          f" {chunk_contador}/{total_chunks_estimados} ({filas_acumuladas:,}"
+          " filas cargadas)",
+      )
+
+    df_conmedidor_pg = (
+        pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+    )
+
+    actualizar_progreso(
+        0.80,
+        "[PASO 4/6] Lectura de PostgreSQL finalizada al 100% por bloques.",
+    )
+
   except Exception as ex:
     actualizar_progreso(1.0, f"[ERROR PG] Falló la lectura de PostgreSQL: {ex}")
     return False
@@ -568,9 +618,9 @@ def ejecutar_sincronizacion_automatica(
   if not df_conmedidor_pg.empty:
     total_registros_pg = len(df_conmedidor_pg)
     actualizar_progreso(
-        0.80,
-        f"[PASO 5/6] PostgreSQL leído ({total_registros_pg:,} registros)."
-        " Ejecutando cruce estricto de datos...",
+        0.82,
+        f"[PASO 5/6] PostgreSQL leído con éxito ({total_registros_pg:,} registros"
+        " totales). Iniciando cruce estricto de datos...",
     )
 
     df_actualizado, c_p, _ = procesar_cruce_datos(
@@ -740,7 +790,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Indicadores de Cobertura
 col_ind1, col_ind2, col_ind3 = st.columns(3)
 
 with col_ind1:
@@ -794,12 +843,10 @@ st.markdown(
     "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
 )
 
-# Contenedores para Estado y Barras (Espera y Ejecución)
 st.markdown("#### 🔄 Estado y Progreso del Sistema")
 estado_ejecucion_placeholder = st.empty()
 barra_progreso_placeholder = st.empty()
 
-# Consola y Limpieza Masiva (Definimos el placeholder de consola antes de usarlo)
 col_consola, col_limpieza = st.columns([1, 1], gap="medium")
 
 with col_consola:
@@ -810,7 +857,6 @@ with col_consola:
       f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
   )
 
-# Lógica del Temporizador y Cuenta Regresiva (Segundero y su barra de progreso de espera)
 if st.session_state.is_running and st.session_state.next_run_time:
   ahora = datetime.now(ZONA_MEXICO)
   if ahora >= st.session_state.next_run_time:
@@ -870,7 +916,9 @@ else:
   estado_ejecucion_placeholder.markdown(
       "⏸️ **Temporizador inactivo.** Presiona **INICIAR** en la barra lateral."
   )
-  barra_progreso_placeholder.progress(0, text="Listo para iniciar temporizador...")
+  barra_progreso_placeholder.progress(
+      0, text="Listo para iniciar temporizador..."
+  )
 
 st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
 
