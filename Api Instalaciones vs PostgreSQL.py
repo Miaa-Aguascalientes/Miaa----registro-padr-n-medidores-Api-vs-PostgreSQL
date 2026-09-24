@@ -524,17 +524,67 @@ renderizar_progreso_y_consola()
 st.markdown("---")
 
 # ==========================================
-# 8. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
+# 8. OBTENCIÓN DE DATOS PARA INDICADORES
+# ==========================================
+total_registros_db = obtener_total_registros()
+total_con_serie = obtener_total_con_serie()
+df_filtrado = cargar_datos_api()
+total_registros_api = len(df_filtrado) if not df_filtrado.empty else 0
+
+# ==========================================
+# 9. TARJETAS DE INDICADORES (A MERO ARRIBA)
+# ==========================================
+if total_registros_db > 0:
+  c_m1, c_m2, c_m3 = st.columns(3)
+  with c_m1:
+    st.markdown(
+        f"""
+            <div class="metric-card">
+                <div class="metric-icon-box" style="color: #38bdf8;"><i class="fa-solid fa-database"></i></div>
+                <div class="metric-content">
+                    <div class="metric-title">Total Registros (PG)</div>
+                    <div class="metric-value">{total_registros_db:,}</div>
+                </div>
+            </div>
+        """,
+        unsafe_allow_html=True,
+    )
+  with c_m2:
+    st.markdown(
+        f"""
+            <div class="metric-card">
+                <div class="metric-icon-box" style="color: #4ade80;"><i class="fa-solid fa-barcode"></i></div>
+                <div class="metric-content">
+                    <div class="metric-title">Predios con Serie</div>
+                    <div class="metric-value">{total_con_serie:,}</div>
+                </div>
+            </div>
+        """,
+        unsafe_allow_html=True,
+    )
+  with c_m3:
+    st.markdown(
+        f"""
+            <div class="metric-card">
+                <div class="metric-icon-box" style="color: #f59e0b;"><i class="fa-solid fa-cloud-arrow-down"></i></div>
+                <div class="metric-content">
+                    <div class="metric-title">Registros en la API</div>
+                    <div class="metric-value">{total_registros_api:,}</div>
+                </div>
+            </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+  st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
+
+# ==========================================
+# 10. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
 # ==========================================
 tab1, tab2 = st.tabs([
     "🚰 Panel Principal y Gestión",
     "📋 Tablas de Datos (PostgreSQL y API)",
 ])
-
-total_registros_db = obtener_total_registros()
-total_con_serie = obtener_total_con_serie()
-df_filtrado = cargar_datos_api()
-total_registros_api = len(df_filtrado) if not df_filtrado.empty else 0
 
 with tab1:
   st.markdown(
@@ -543,49 +593,6 @@ with tab1:
       unsafe_allow_html=True,
   )
   if total_registros_db > 0:
-    c_m1, c_m2, c_m3 = st.columns(3)
-    with c_m1:
-      st.markdown(
-          f"""
-                <div class="metric-card">
-                    <div class="metric-icon-box" style="color: #38bdf8;"><i class="fa-solid fa-database"></i></div>
-                    <div class="metric-content">
-                        <div class="metric-title">Total Registros (PG)</div>
-                        <div class="metric-value">{total_registros_db:,}</div>
-                    </div>
-                </div>
-            """,
-          unsafe_allow_html=True,
-      )
-    with c_m2:
-      st.markdown(
-          f"""
-                <div class="metric-card">
-                    <div class="metric-icon-box" style="color: #4ade80;"><i class="fa-solid fa-barcode"></i></div>
-                    <div class="metric-content">
-                        <div class="metric-title">Predios con Serie</div>
-                        <div class="metric-value">{total_con_serie:,}</div>
-                    </div>
-                </div>
-            """,
-          unsafe_allow_html=True,
-      )
-    with c_m3:
-      st.markdown(
-          f"""
-                <div class="metric-card">
-                    <div class="metric-icon-box" style="color: #f59e0b;"><i class="fa-solid fa-cloud-arrow-down"></i></div>
-                    <div class="metric-content">
-                        <div class="metric-title">Registros en la API</div>
-                        <div class="metric-value">{total_registros_api:,}</div>
-                    </div>
-                </div>
-            """,
-          unsafe_allow_html=True,
-      )
-
-    st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
-
     # ==========================================
     # LIMPIEZA MASIVA DE CAMPOS (SIN BORRAR FILAS)
     # ==========================================
