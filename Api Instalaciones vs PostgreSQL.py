@@ -75,7 +75,7 @@ if "total_seconds_interval" not in st.session_state:
 def agregar_log(mensaje):
   timestamp = datetime.now().strftime("%H:%M:%S")
   st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
-  if len(st.session_state.logs) > 150:
+  if len(st.session_state.logs) > 200:
     st.session_state.logs.pop()
 
 
@@ -136,8 +136,8 @@ def cargar_pagina_usuarios_db(limit=50, offset=0):
     return pd.DataFrame()
 
 
-@st.cache_data(ttl=300)
-def cargar_datos_api():
+def cargar_datos_api_con_logs():
+  agregar_log("🔐 [API] Intentando autenticación con credenciales...")
   try:
     usuario = st.secrets["api"]["usuario"]
     password = st.secrets["api"]["password"]
@@ -145,18 +145,22 @@ def cargar_datos_api():
         url_login,
         json={"username": usuario, "password": password},
         headers={"Content-Type": "application/json"},
+        timeout=15,
     )
     if res_login.status_code == 200:
       token = res_login.json().get("token") or res_login.json().get(
           "access_token"
       )
       if token:
+        agregar_log("✅ [API] Autenticación exitosa. Token obtenido.")
+        agregar_log("📥 [API] Descargando registros de instalaciones...")
         res_inst = requests.get(
             url_instalaciones,
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {token}",
             },
+            timeout=30,
         )
         if res_inst.status_code == 200:
           data = res_inst.json()
@@ -172,6 +176,9 @@ def cargar_datos_api():
               df = pd.DataFrame([data])
 
           if not df.empty:
+            agregar_log(
+                f"📦 [API] Se descargaron {len(df):,} registros correctamente."
+            )
             cols_a_remover = [
                 c
                 for c in df.columns
@@ -222,6 +229,9 @@ def cargar_datos_api():
 
                 return f"{p}-0"
 
+              agregar_log(
+                  "⚙️ [Proceso] Construyendo identificador único 'Predio_Viv'..."
+              )
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
               cols = ["Predio_Viv"] + [
                   col for col in df.columns if col != "Predio_Viv"
@@ -229,18 +239,31 @@ def cargar_datos_api():
               df = df[cols]
 
           return df
+    agregar_log(
+        f"❌ [API] Error en autenticación o respuesta (Código:"
+        f" {res_login.status_code})"
+    )
     return pd.DataFrame()
-  except Exception:
+  except Exception as e:
+    agregar_log(f"❌ [API] Excepción de red o conexión: {e}")
     return pd.DataFrame()
 
 
 # ==========================================
-# 4. CRUCE Y ACTUALIZACIÓN EN POSTGRESQL
+# 4. CRUCE Y ACTUALIZACIÓN EN POSTGRESQL CON LOGS
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
+  agregar_log(
+      "🔄 [Memoria] Indexando registros de la API en diccionarios para cruce"
+      " rápido..."
+  )
   df_api_merge = df_filtrado.copy()
 
   if "Predio_Viv" not in df_api_merge.columns:
+    agregar_log(
+        "⚠️ [Aviso] No se encontró la columna 'Predio_Viv' en los datos de la"
+        " API."
+    )
     return df_conmedidor_pg
 
   df_api_merge["key_join"] = (
@@ -301,6 +324,10 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   else:
     df_conmedidor_pg["key_join"] = ""
 
+  agregar_log(
+      "🔄 [Memoria] Mapeando valores actualizados en el DataFrame de"
+      " PostgreSQL..."
+  )
   df_conmedidor_pg["_Serie"] = (
       df_conmedidor_pg["key_join"]
       .map(dict_api_serie)
@@ -340,38 +367,46 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   return df_conmedidor_pg
 
 
-def ejecutar_sincronizacion_automatica():
+def ejecutar_sincronizacion_completa():
   agregar_log(
-      "🔄 Iniciando ciclo: Conectando y autenticando con la API de MIAA..."
+      "🚀 --------------------------------------------------------"
   )
-  df_filtrado = cargar_datos_api()
+  agregar_log("🚀 Iniciando ciclo completo de sincronización...")
 
+  df_filtrado = cargar_datos_api_con_logs()
   if df_filtrado.empty:
     agregar_log(
-        "❌ Error: No se pudo conectar de manera correcta a la API o no devolvió"
-        " datos."
+        "❌ [Proceso Abortado] No hay datos disponibles desde la API para"
+        " sincronizar."
     )
     return False
 
   agregar_log(
-      f"✅ Datos obtenidos de la API con éxito ({len(df_filtrado):,} registros)."
+      "🗄️ [PostgreSQL] Conectando a la base de datos para leer la tabla"
+      " 'usuarios_miaa_conmedidor'..."
   )
-  agregar_log(
-      "🔄 Actualizando registros en PostgreSQL mediante cruce de datos..."
-  )
-
   try:
     engine_pg = obtener_motor_postgres()
     df_conmedidor_pg = pd.read_sql(
         'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg
     )
   except Exception as ex:
-    agregar_log(f"❌ Error al conectar a PostgreSQL: {ex}")
+    agregar_log(f"❌ [PostgreSQL] Error al leer la tabla: {ex}")
     return False
 
   if not df_conmedidor_pg.empty:
     total_predios = len(df_conmedidor_pg)
+    agregar_log(
+        f"📊 [PostgreSQL] Se leyeron {total_predios:,} registros de la tabla."
+        " Iniciando cruce..."
+    )
+
     df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
+
+    agregar_log(
+        "💾 [PostgreSQL] Guardando y actualizando registros en la base de"
+        " datos..."
+    )
     try:
       df_actualizado.to_sql(
           "usuarios_miaa_conmedidor",
@@ -381,15 +416,15 @@ def ejecutar_sincronizacion_automatica():
           index=False,
       )
       agregar_log(
-          f"✅ ¡Actualización completada! Se actualizaron {total_predios:,}"
-          " registros en PostgreSQL."
+          f"✅ [Éxito] ¡Sincronización completada! Se actualizaron"
+          f" {total_predios:,} registros en PostgreSQL."
       )
       return True
     except Exception as ex:
-      agregar_log(f"❌ Error al guardar en PostgreSQL: {ex}")
+      agregar_log(f"❌ [PostgreSQL] Error al escribir en la base de datos: {ex}")
       return False
   else:
-    agregar_log("⚠️ Advertencia: La tabla en PostgreSQL está vacía.")
+    agregar_log("⚠️ [PostgreSQL] La tabla 'usuarios_miaa_conmedidor' está vacía.")
     return False
 
 
@@ -402,8 +437,7 @@ with st.sidebar:
 
   st.markdown("#### Ejecución Manual")
   if st.button("🚀 Ejecutar Ahora", type="primary", use_container_width=True):
-    ejecutar_sincronizacion_automatica()
-    st.rerun()
+    ejecutar_sincronizacion_completa()
 
   st.markdown("---")
   st.markdown("#### Ejecución Periódica")
@@ -432,16 +466,14 @@ with st.sidebar:
     st.session_state.next_run_time = datetime.now() + timedelta(
         seconds=total_segundos
     )
-    agregar_log(f"⏱️ Temporizador activado ({intervalo_sel.lower()}).")
+    agregar_log(f"⏱️ Temporizador automático activado ({intervalo_sel.lower()}).")
     st.success("¡Temporizador activo!")
-    st.rerun()
 
   if btn_parar:
     st.session_state.is_running = False
     st.session_state.next_run_time = None
-    agregar_log("🛑 Temporizador detenido.")
+    agregar_log("🛑 Temporizador automático detenido.")
     st.warning("Temporizador detenido.")
-    st.rerun()
 
 # ==========================================
 # 6. TÍTULO PRINCIPAL
@@ -451,61 +483,50 @@ st.markdown(
 )
 st.markdown("---")
 
-
 # ==========================================
-# 7. VERIFICADOR SEGURO DEL TEMPORIZADOR (FUERA DE FRAGMENTO PESADO)
+# 7. VERIFICADOR DE TEMPORIZADOR AUTOMÁTICO
 # ==========================================
 if st.session_state.is_running and st.session_state.next_run_time:
   ahora = datetime.now()
   if ahora >= st.session_state.next_run_time:
-    ejecutar_sincronizacion_automatica()
+    ejecutar_sincronizacion_completa()
     st.session_state.next_run_time = datetime.now() + timedelta(
         seconds=st.session_state.total_seconds_interval
     )
-    st.rerun()
-
 
 # ==========================================
-# 8. FRAGMENTO LIGERO PARA CONSOLA Y TIEMPO (SIN CONGELAR)
+# 8. CONSOLA DE REGISTROS EN TIEMPO REAL (CONTENEDOR DINÁMICO)
 # ==========================================
-@st.fragment(run_every=1)
-def renderizar_progreso_y_consola():
-  if st.session_state.is_running and st.session_state.next_run_time:
-    ahora = datetime.now()
-    restante = (st.session_state.next_run_time - ahora).total_seconds()
-    restante = max(0, int(restante))
-
-    total_intervalo = st.session_state.total_seconds_interval
-    transcurrido = total_intervalo - restante
-    progreso = min(1.0, max(0.0, transcurrido / total_intervalo))
-
-    mins, secs = divmod(restante, 60)
-    tiempo_formateado = f"{mins:02d}:{secs:02d}"
-
-    st.markdown(
-        f"<p style='font-size: 13px; color: #38bdf8; font-weight: bold;"
-        f" margin-bottom: 4px;'>⏱️ Próxima ejecución automática en:"
-        f" {tiempo_formateado}</p>",
-        unsafe_allow_html=True,
-    )
-    st.progress(progreso)
-  else:
-    st.markdown(
-        "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
-        " margin-bottom: 4px;'>⏸️ Temporizador inactivo. Usa 'INICIAR' en la"
-        " barra lateral.</p>",
-        unsafe_allow_html=True,
-    )
-    st.progress(0.0)
-
-  st.markdown("#### 🖥️ Consola de Registros en Tiempo Real")
-  logs_html = "<br>".join(st.session_state.logs)
-  st.markdown(
-      f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
+if st.session_state.is_running and st.session_state.next_run_time:
+  ahora = datetime.now()
+  restante = max(
+      0, int((st.session_state.next_run_time - ahora).total_seconds())
   )
+  total = st.session_state.total_seconds_interval
+  progreso = min(1.0, max(0.0, (total - restante) / total))
+  mins, secs = divmod(restante, 60)
+  st.markdown(
+      f"<p style='font-size: 13px; color: #38bdf8; font-weight: bold;"
+      f" margin-bottom: 2px;'>⏱️ Próxima ejecución automática en:"
+      f" {mins:02d}:{secs:02d}</p>",
+      unsafe_allow_html=True,
+  )
+  st.progress(progreso)
+else:
+  st.markdown(
+      "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
+      " margin-bottom: 2px;'>⏸️ Temporizador inactivo. Usa 'INICIAR' en la"
+      " barra lateral.</p>",
+      unsafe_allow_html=True,
+  )
+  st.progress(0.0)
 
-
-renderizar_progreso_y_consola()
+st.markdown("#### 🖥️ Consola de Registros en Tiempo Real")
+terminal_placeholder = st.empty()
+logs_html = "<br>".join(st.session_state.logs)
+terminal_placeholder.markdown(
+    f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
+)
 
 st.markdown("---")
 
@@ -514,7 +535,7 @@ st.markdown("---")
 # ==========================================
 total_registros_db = obtener_total_registros()
 total_con_serie = obtener_total_con_serie()
-df_filtrado = cargar_datos_api()
+df_filtrado = cargar_datos_api_con_logs()
 total_registros_api = len(df_filtrado) if not df_filtrado.empty else 0
 
 if total_registros_db > 0:
@@ -630,7 +651,6 @@ with tab1:
                 f"Limpieza masiva ejecutada en campos: {campos_a_limpiar_masivo}"
             )
             st.success("¡Los campos seleccionados han sido vaciados con éxito!")
-            st.rerun()
           except Exception as e:
             st.error(f"Error al ejecutar la limpieza masiva: {e}")
 
