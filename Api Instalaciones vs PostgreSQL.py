@@ -534,28 +534,14 @@ def procesar_cruce_datos(
 
 
 def ejecutar_sincronizacion_automatica():
-  status_container = st.status(
-      "🔄 [15%] Iniciando sincronización...", expanded=True
-  )
-  progress_bar = status_container.progress(15)
+  agregar_log("🔄 [PASO 1/4] Iniciando sincronización automática...")
 
-  status_container.update(
-      label="🌐 [40%] [1/4] Descargando registros de la API...", state="running"
-  )
-  progress_bar.progress(40)
-  agregar_log(
-      "🔄 [CICLO INICIADO] Conectando a la API de MIAA para descarga de"
-      " instalaciones..."
-  )
-
+  agregar_log("🌐 [PASO 2/4] Conectando y descargando registros de la API...")
   df_filtrado = cargar_datos_api()
 
   if df_filtrado.empty:
-    status_container.update(
-        label="❌ Error al obtener datos de la API", state="error"
-    )
     agregar_log(
-        "❌ [ERROR API] No se pudo obtener respuesta o datos válidos de la API."
+        "❌ [ERROR] No se pudo obtener respuesta o datos válidos de la API."
     )
     return False
 
@@ -564,16 +550,7 @@ def ejecutar_sincronizacion_automatica():
       " correctamente."
   )
 
-  status_container.update(
-      label="📥 [65%] [2/4] Extrayendo registros de PostgreSQL...",
-      state="running",
-  )
-  progress_bar.progress(65)
-  agregar_log(
-      "🔄 [PG CONEXIÓN] Extrayendo registros de PostgreSQL para realizar el"
-      " cruce..."
-  )
-
+  agregar_log("📥 [PASO 3/4] Extrayendo registros desde PostgreSQL...")
   try:
     engine_pg = obtener_motor_postgres()
     df_conmedidor_pg = pd.read_sql(
@@ -584,37 +561,23 @@ def ejecutar_sincronizacion_automatica():
         " PostgreSQL exitosamente."
     )
   except Exception as ex:
-    status_container.update(
-        label="❌ Error al leer la base de datos", state="error"
-    )
     agregar_log(f"❌ [ERROR PG] Falló la lectura de PostgreSQL: {ex}")
     return False
 
   if not df_conmedidor_pg.empty:
     total_registros = len(df_conmedidor_pg)
-
-    status_container.update(
-        label=(
-            "⚙️ [85%] [3/4] Procesando cruce estricto y auditoría para"
-            f" {total_registros:,} registros..."
-        ),
-        state="running",
-    )
-    progress_bar.progress(85)
     agregar_log(
-        f"⚙️ Procesando actualización masiva para {total_registros:,}"
-        " registros locales..."
+        f"⚙️ [PASO 4/4] Procesando cruce estricto y auditoría para"
+        f" {total_registros:,} registros..."
     )
 
     df_actualizado, c_p, _ = procesar_cruce_datos(
         df_conmedidor_pg, df_filtrado, registrar_auditoria=True
     )
 
-    status_container.update(
-        label="💾 [95%] [4/4] Guardando cambios en PostgreSQL...", state="running"
+    agregar_log(
+        "💾 Guardando cambios actualizados en la tabla de PostgreSQL..."
     )
-    progress_bar.progress(95)
-    agregar_log("💾 [PG ESCRITURA] Guardando cambios actualizados en la tabla...")
 
     try:
       df_actualizado.to_sql(
@@ -624,27 +587,15 @@ def ejecutar_sincronizacion_automatica():
           if_exists="replace",
           index=False,
       )
-      progress_bar.progress(100)
-      status_container.update(
-          label=(
-              "🎉 [100%] ¡Sincronización completada con éxito! Se actualizaron"
-              f" {total_registros:,} registros."
-          ),
-          state="complete",
-      )
       agregar_log(
-          f"🎉 [CICLO EXITOSO] Se actualizaron {total_registros:,} registros en"
-          " la base de datos."
+          f"🎉 [CICLO EXITOSO] Sincronización completada. Se actualizaron"
+          f" {total_registros:,} registros en la base de datos."
       )
       return True
     except Exception as ex:
-      status_container.update(
-          label="❌ Error al guardar en la base de datos", state="error"
-      )
       agregar_log(f"❌ [ERROR ESCRITURA PG] No se pudo guardar en SQL: {ex}")
       return False
   else:
-    status_container.update(label="⚠️ La tabla en PG está vacía", state="error")
     agregar_log("⚠️ [AVISO] La tabla en PostgreSQL está vacía actualmente.")
     return False
 
