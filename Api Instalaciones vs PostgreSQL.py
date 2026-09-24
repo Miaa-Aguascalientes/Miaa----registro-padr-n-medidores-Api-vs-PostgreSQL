@@ -145,7 +145,7 @@ def cargar_datos_api():
               df = pd.DataFrame([data])
 
           if not df.empty:
-            # Renombrar explícitamente numeroCliente de la API a Cliente
+            # 1. Renombrar explícitamente numeroCliente de la API a Cliente
             if "numeroCliente" in df.columns:
               df["Cliente"] = df["numeroCliente"]
             elif "numero_cliente" in df.columns:
@@ -153,6 +153,7 @@ def cargar_datos_api():
             elif "numCliente" in df.columns:
               df["Cliente"] = df["numCliente"]
 
+            # 2. Remover fotos/imágenes
             cols_a_remover = [
                 c
                 for c in df.columns
@@ -163,6 +164,7 @@ def cargar_datos_api():
             ]
             df = df.drop(columns=cols_a_remover, errors="ignore")
 
+            # 3. Detectar columnas para construir Predio_Viv
             col_api_predio = next(
                 (
                     c
@@ -207,7 +209,23 @@ def cargar_datos_api():
 
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-            # Reordenar columnas para poner 'Cliente' y 'Predio_Viv' al principio
+            # 4. Eliminar campos solicitados (predio, unidad, uuid, numeroCliente y sus variantes)
+            columnas_a_quitar = [
+                "predio",
+                "predioViv",
+                "predio_viv",
+                "numeroPredio",
+                "unidad",
+                "unidadViv",
+                "unidad_viv",
+                "uuid",
+                "numeroCliente",
+                "numero_cliente",
+                "numCliente",
+            ]
+            df = df.drop(columns=columnas_a_quitar, errors="ignore")
+
+            # 5. Reordenar columnas para poner 'Cliente' y 'Predio_Viv' al principio
             cols_prioritarias = [
                 c for c in ["Cliente", "Predio_Viv"] if c in df.columns
             ]
