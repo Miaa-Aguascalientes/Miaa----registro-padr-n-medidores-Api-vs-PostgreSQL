@@ -69,14 +69,14 @@ if "logs" not in st.session_state:
       f"[{hora_actual_mx}] Sistema inicializado. Listo para operar."
   ]
 
+if "is_running_timer" not in st.session_state:
+  st.session_state.is_running_timer = False
+
 if "ultimo_tiempo_ejecucion" not in st.session_state:
   st.session_state.ultimo_tiempo_ejecucion = time.time()
 
-if "intervalo_minutos" not in st.session_state:
-  st.session_state.intervalo_minutos = 15
-
-if "activar_automatico" not in st.session_state:
-  st.session_state.activar_automatico = False
+if "total_seconds_interval" not in st.session_state:
+  st.session_state.total_seconds_interval = 900  # 15 minutos por defecto
 
 
 def agregar_log(mensaje):
@@ -185,16 +185,11 @@ def cargar_datos_api():
 # 4. PROCESO DE SINCRONIZACIÓN CON PROGRESO
 # ==========================================
 def ejecutar_proceso_sincronizacion(es_automatico=False):
-  tipo_ejec = (
-      f"automático (cada {st.session_state.intervalo_minutos} min)"
-      if es_automatico
-      else "manual"
-  )
+  tipo_ejec = "automático (periódico)" if es_automatico else "manual"
   agregar_log(
       f"🚀 Iniciando proceso de sincronización ({tipo_ejec}) con la API..."
   )
 
-  # Barra de progreso visual para el proceso
   barra_progreso = st.progress(0, text="Iniciando sincronización...")
 
   try:
@@ -205,7 +200,6 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
     barra_progreso.empty()
     return
 
-  # 1. Login API
   barra_progreso.progress(10, text="[1/3] Conectando al login de MIAA...")
   agregar_log("🔄 [Paso 1/3] Conectando al login de MIAA...")
   try:
@@ -239,7 +233,6 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
 
   agregar_log("✅ Autenticación exitosa. Descargando instalaciones...")
 
-  # 2. Descarga de instalaciones
   barra_progreso.progress(
       35, text="[2/3] Descargando registros de instalaciones..."
   )
@@ -474,7 +467,6 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
         )
         actualizados += 1
 
-        # Actualizar barra de progreso dinámicamente cada 50 registros o al final
         if actualizados % 50 == 0 or actualizados == total_filas_df:
           progreso_actual = 60 + int(
               (actualizados / max(1, total_filas_df)) * 40
@@ -506,22 +498,17 @@ def ejecutar_proceso_sincronizacion(es_automatico=False):
 # ==========================================
 # 5. VERIFICADOR AUTOMÁTICO DE TIEMPO
 # ==========================================
-if st.session_state.activar_automatico:
-  TIEMPO_INTERVALO = st.session_state.intervalo_minutos * 60
+if st.session_state.is_running_timer:
   tiempo_actual = time.time()
-
   if (
       tiempo_actual - st.session_state.ultimo_tiempo_ejecucion
-  ) >= TIEMPO_INTERVALO:
-    agregar_log(
-        f"⏰ Se cumplió el intervalo de {st.session_state.intervalo_minutos}"
-        " minutos. Ejecutando sincronización automática..."
-    )
+  ) >= st.session_state.total_seconds_interval:
+    agregar_log("⏰ Intervalo de tiempo cumplido. Ejecutando proceso periódico...")
     ejecutar_proceso_sincronizacion(es_automatico=True)
 
 
 # ==========================================
-# 6. BARRA LATERAL (SIDEBAR CON TODO LO TUYO)
+# 6. BARRA LATERAL (SIDEBAR CON SELECTOR Y BOTONES)
 # ==========================================
 with st.sidebar:
   st.markdown("<h2>⚙️ Configuración</h2>", unsafe_allow_html=True)
@@ -533,63 +520,61 @@ with st.sidebar:
     st.rerun()
 
   st.markdown("---")
-  st.markdown("#### ⏱️ Automatización por Tiempo")
+  st.markdown("#### Ejecución Periódica")
 
-  # BOTÓN / INTERRUPTOR FÍSICO DE ACTIVACIÓN
-  estado_activacion = st.toggle(
-      "Activar ejecución automática",
-      value=st.session_state.activar_automatico,
-      key="toggle_activar_auto",
+  opciones_intervalo = {
+      "Cada 1 minuto": 60,
+      "Cada 5 minutos": 300,
+      "Cada 15 minutos": 900,
+      "Cada 30 minutos": 1800,
+      "Cada hora": 3600,
+  }
+  intervalo_sel = st.selectbox(
+      "Seleccionar Intervalo", list(opciones_intervalo.keys())
   )
+  st.session_state.total_seconds_interval = opciones_intervalo[intervalo_sel]
 
-  if estado_activacion != st.session_state.activar_automatico:
-    st.session_state.activar_automatico = estado_activacion
-    if estado_activacion:
-      st.session_state.ultimo_tiempo_ejecucion = time.time()
-      agregar_log("🟢 Ejecución automática por tiempo ACTIVADA.")
-    else:
-      agregar_log("🔴 Ejecución automática por tiempo DESACTIVADA.")
+  col_sb1, col_sb2 = st.columns(2)
+  with col_sb1:
+    btn_iniciar = st.button("INICIAR", type="primary", use_container_width=True)
+  with col_sb2:
+    btn_parar = st.button("PARAR", type="secondary", use_container_width=True)
+
+  if btn_iniciar:
+    st.session_state.is_running_timer = True
+    st.session_state.ultimo_tiempo_ejecucion = time.time()
+    agregar_log(
+        f"🟢 Temporizador automático ACTIVADO ({intervalo_sel.lower()})."
+    )
+    st.success("¡Temporizador activo!")
     st.rerun()
 
-  # EXPANDER Y SELECTOR DEL PERIODO DE TIEMPO QUE PEDISTE
-  with st.expander("📅 Configurar Periodo de Tiempo", expanded=True):
-    minutos_elegidos = st.number_input(
-        "Minutos entre ejecuciones:",
-        min_value=1,
-        max_value=1440,
-        value=st.session_state.intervalo_minutos,
-        step=1,
-        key="input_intervalo_minutos",
-    )
-
-    if minutos_elegidos != st.session_state.intervalo_minutos:
-      st.session_state.intervalo_minutos = minutos_elegidos
-      agregar_log(
-          f"⚙️ Intervalo automático actualizado a {minutos_elegidos} minuto(s)."
-      )
-      st.rerun()
+  if btn_parar:
+    st.session_state.is_running_timer = False
+    agregar_log("🔴 Temporizador automático DETENIDO.")
+    st.warning("Temporizador detenido.")
+    st.rerun()
 
   st.markdown("---")
-  st.markdown("#### Información del Sistema")
-  if st.session_state.activar_automatico:
-    tiempo_restante = max(
+  st.markdown("#### Estado del Temporizador")
+  if st.session_state.is_running_timer:
+    restante = max(
         0,
         int(
-            (st.session_state.intervalo_minutos * 60)
+            st.session_state.total_seconds_interval
             - (time.time() - st.session_state.ultimo_tiempo_ejecucion)
         ),
     )
-    min_restantes = tiempo_restante // 60
-    seg_restantes = tiempo_restante % 60
+    mins, secs = divmod(restante, 60)
     st.markdown(
         f"<p style='font-size:12px; color:#4ade80;'><b>ESTADO: ACTIVO</b><br>Próxima"
-        f" ejecución en: <b>{min_restantes}m {seg_restantes}s</b></p>",
+        f" ejecución en: <b>{mins:02d}:{secs:02d}</b></p>",
         unsafe_allow_html=True,
     )
   else:
     st.markdown(
-        "<p style='font-size:12px; color:#f87171;'><b>ESTADO: APAGADO</b><br>El"
-        " temporizador está pausado.</p>",
+        "<p style='font-size:12px; color:#f87171;'><b>ESTADO: DETENIDO</b><br>El"
+        " temporizador está apagado.</p>",
         unsafe_allow_html=True,
     )
 
