@@ -2,10 +2,13 @@
 # 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS
 # ==========================================
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 from sqlalchemy import create_engine, text
 import streamlit as st
+
+ZONA_MEXICO = ZoneInfo("America/Mexico_City")
 
 st.set_page_config(
     page_title="Gestor de Registros MIAA", page_icon="🚰", layout="wide"
@@ -53,16 +56,16 @@ st.markdown(
 )
 
 # ==========================================
-# 2. GESTIÓN DE LOGS (CONSOLA)
+# 2. GESTIÓN DE LOGS (CONSOLA - HORA MÉXICO)
 # ==========================================
 if "logs" not in st.session_state:
   st.session_state.logs = [
-      f"[{datetime.now().strftime('%H:%M:%S')}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
+      f"[{datetime.now(ZONA_MEXICO).strftime('%H:%M:%S')}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
   ]
 
 
 def agregar_log(mensaje):
-  timestamp = datetime.now().strftime("%H:%M:%S")
+  timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
   if len(st.session_state.logs) > 100:
     st.session_state.logs.pop()
@@ -145,7 +148,6 @@ def cargar_datos_api():
               df = pd.DataFrame([data])
 
           if not df.empty:
-            # 1. Renombrar explícitamente numeroCliente de la API a Cliente
             if "numeroCliente" in df.columns:
               df["Cliente"] = df["numeroCliente"]
             elif "numero_cliente" in df.columns:
@@ -153,7 +155,6 @@ def cargar_datos_api():
             elif "numCliente" in df.columns:
               df["Cliente"] = df["numCliente"]
 
-            # 2. Remover fotos/imágenes
             cols_a_remover = [
                 c
                 for c in df.columns
@@ -164,7 +165,6 @@ def cargar_datos_api():
             ]
             df = df.drop(columns=cols_a_remover, errors="ignore")
 
-            # 3. Detectar columnas para construir Predio_Viv
             col_api_predio = next(
                 (
                     c
@@ -209,7 +209,6 @@ def cargar_datos_api():
 
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-            # 4. Eliminar campos sobrantes
             columnas_a_quitar = [
                 "predio",
                 "predioViv",
@@ -225,7 +224,6 @@ def cargar_datos_api():
             ]
             df = df.drop(columns=columnas_a_quitar, errors="ignore")
 
-            # 5. Reordenar columnas para poner 'Cliente' y 'Predio_Viv' al principio
             cols_prioritarias = [
                 c for c in ["Cliente", "Predio_Viv"] if c in df.columns
             ]
@@ -239,15 +237,14 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE SECUENCIAL (DIRECTO)
+# 4. FUNCIÓN DE CRUCE SECUENCIAL CORREGIDO
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   df_api_merge = df_filtrado.copy()
 
   if df_api_merge.empty or df_conmedidor_pg.empty:
-    return df_conmedidor_pg
+    return df_conmedidor_pg, 0, 0
 
-  # Preparar llaves de búsqueda limpias usando directamente Predio_Viv y Cliente
   df_api_merge["key_predio"] = (
       df_api_merge["Predio_Viv"].astype(str).str.strip()
       if "Predio_Viv" in df_api_merge.columns
@@ -259,49 +256,54 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       else ""
   )
 
-  # Diccionarios de mapeo rápido basados en Predio_Viv y Cliente
+  # Filtrar estrictamente claves vacías o inválidas para que no se mapeen por error
+  invalidos = {"none", "nan", "", "nat", "0", "null", "None", "NaN"}
+
+  df_api_p = df_api_merge[~df_api_merge["key_predio"].str.lower().isin(invalidos)]
+  df_api_c = df_api_merge[~df_api_merge["key_cliente"].str.lower().isin(invalidos)]
+
   dict_api_serie_p = dict(
-      zip(df_api_merge["key_predio"], df_api_merge.get("serie", ""))
+      zip(df_api_p["key_predio"], df_api_p.get("serie", ""))
   )
   dict_api_colonia_p = dict(
-      zip(df_api_merge["key_predio"], df_api_merge.get("colonia", ""))
+      zip(df_api_p["key_predio"], df_api_p.get("colonia", ""))
   )
   dict_api_domicilio_p = dict(
-      zip(df_api_merge["key_predio"], df_api_merge.get("domicilio", ""))
+      zip(df_api_p["key_predio"], df_api_p.get("domicilio", ""))
   )
   dict_api_instalador_p = dict(
-      zip(df_api_merge["key_predio"], df_api_merge.get("usuarioNombre", ""))
+      zip(df_api_p["key_predio"], df_api_p.get("usuarioNombre", ""))
   )
   dict_api_lectura_p = dict(
-      zip(df_api_merge["key_predio"], df_api_merge.get("lecturaActual", 0))
+      zip(df_api_p["key_predio"], df_api_p.get("lecturaActual", 0))
   )
   dict_api_f_reg_p = dict(
-      zip(df_api_merge["key_predio"], df_api_merge.get("fechaRegistro", ""))
+      zip(df_api_p["key_predio"], df_api_p.get("fechaRegistro", ""))
   )
   dict_api_f_inst_p = dict(
-      zip(df_api_merge["key_predio"], df_api_merge.get("fechaInstalacion", ""))
+      zip(df_api_p["key_predio"], df_api_p.get("fechaInstalacion", ""))
   )
 
   dict_api_serie_c = dict(
-      zip(df_api_merge["key_cliente"], df_api_merge.get("serie", ""))
+      zip(df_api_c["key_cliente"], df_api_c.get("serie", ""))
   )
   dict_api_colonia_c = dict(
-      zip(df_api_merge["key_cliente"], df_api_merge.get("colonia", ""))
+      zip(df_api_c["key_cliente"], df_api_c.get("colonia", ""))
   )
   dict_api_domicilio_c = dict(
-      zip(df_api_merge["key_cliente"], df_api_merge.get("domicilio", ""))
+      zip(df_api_c["key_cliente"], df_api_c.get("domicilio", ""))
   )
   dict_api_instalador_c = dict(
-      zip(df_api_merge["key_cliente"], df_api_merge.get("usuarioNombre", ""))
+      zip(df_api_c["key_cliente"], df_api_c.get("usuarioNombre", ""))
   )
   dict_api_lectura_c = dict(
-      zip(df_api_merge["key_cliente"], df_api_merge.get("lecturaActual", 0))
+      zip(df_api_c["key_cliente"], df_api_c.get("lecturaActual", 0))
   )
   dict_api_f_reg_c = dict(
-      zip(df_api_merge["key_cliente"], df_api_merge.get("fechaRegistro", ""))
+      zip(df_api_c["key_cliente"], df_api_c.get("fechaRegistro", ""))
   )
   dict_api_f_inst_c = dict(
-      zip(df_api_merge["key_cliente"], df_api_merge.get("fechaInstalacion", ""))
+      zip(df_api_c["key_cliente"], df_api_c.get("fechaInstalacion", ""))
   )
 
   def mapear_tipo_externo(val):
@@ -315,16 +317,17 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     df_api_merge["tipo_calculado"] = df_api_merge["usuarioExterno"].apply(
         mapear_tipo_externo
     )
+    df_api_p = df_api_merge[~df_api_merge["key_predio"].str.lower().isin(invalidos)]
+    df_api_c = df_api_merge[~df_api_merge["key_cliente"].str.lower().isin(invalidos)]
     dict_api_tipo_p = dict(
-        zip(df_api_merge["key_predio"], df_api_merge["tipo_calculado"])
+        zip(df_api_p["key_predio"], df_api_p["tipo_calculado"])
     )
     dict_api_tipo_c = dict(
-        zip(df_api_merge["key_cliente"], df_api_merge["tipo_calculado"])
+        zip(df_api_c["key_cliente"], df_api_c["tipo_calculado"])
     )
   else:
     dict_api_tipo_p, dict_api_tipo_c = {}, {}
 
-  # PostgreSQL usa directamente las columnas Predio_Viv y Cliente estandarizadas
   df_conmedidor_pg["key_predio"] = (
       df_conmedidor_pg["Predio_Viv"].astype(str).str.strip()
       if "Predio_Viv" in df_conmedidor_pg.columns
@@ -336,26 +339,22 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       else ""
   )
 
-  contador_predio = 0
-  contador_cliente = 0
-
   def aplicar_cruce_secuencial(row, dict_p, dict_c, default_val):
-    nonlocal contador_predio, contador_cliente
-    kp = row["key_predio"]
-    kc = row["key_cliente"]
+    kp = str(row.get("key_predio", "")).strip()
+    kc = str(row.get("key_cliente", "")).strip()
 
-    # 1. Join principal por Predio_Viv contra Predio_Viv
-    if kp and kp.lower() not in ["none", "nan", "", "nat", "0"]:
+    # 1. Intentar buscar por Predio_Viv si es válido y existe en el diccionario
+    if kp and kp.lower() not in invalidos:
       if kp in dict_p:
         val = dict_p[kp]
-        if pd.notna(val) and str(val).strip() not in ["", "None", "nan", "NaT"]:
+        if pd.notna(val) and str(val).strip().lower() not in invalidos:
           return val, "predio"
 
-    # 2. Join secundario por Cliente contra Cliente (cuando Predio_Viv no existe o no hace match)
-    if kc and kc.lower() not in ["none", "nan", "", "nat", "0"]:
+    # 2. Si no se encontró por Predio_Viv, buscar por Cliente como respaldo
+    if kc and kc.lower() not in invalidos:
       if kc in dict_c:
         val = dict_c[kc]
-        if pd.notna(val) and str(val).strip() not in ["", "None", "nan", "NaT"]:
+        if pd.notna(val) and str(val).strip().lower() not in invalidos:
           return val, "cliente"
 
     return default_val, None
@@ -371,8 +370,10 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       [],
   )
 
+  contador_predio = 0
+  contador_cliente = 0
+
   for _, r in df_conmedidor_pg.iterrows():
-    # Serie
     val, match_tipo = aplicar_cruce_secuencial(
         r, dict_api_serie_p, dict_api_serie_c, r.get("_Serie", "")
     )
@@ -382,25 +383,21 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     elif match_tipo == "cliente":
       contador_cliente += 1
 
-    # Colonia
     val, _ = aplicar_cruce_secuencial(
         r, dict_api_colonia_p, dict_api_colonia_c, r.get("_Colonia", "")
     )
     nuevas_colonias.append(val)
 
-    # Domicilio
     val, _ = aplicar_cruce_secuencial(
         r, dict_api_domicilio_p, dict_api_domicilio_c, r.get("_Domicilio", "")
     )
     nuevos_domicilios.append(val)
 
-    # Instalador
     val, _ = aplicar_cruce_secuencial(
         r, dict_api_instalador_p, dict_api_instalador_c, r.get("_Instalador", "")
     )
     nuevos_instaladores.append(val)
 
-    # Tipo instalador
     val, _ = aplicar_cruce_secuencial(
         r,
         dict_api_tipo_p,
@@ -409,7 +406,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     )
     nuevos_tipos.append(val)
 
-    # Lectura actual
     val, _ = aplicar_cruce_secuencial(
         r, dict_api_lectura_p, dict_api_lectura_c, r.get("_Lectura_actual", 0)
     )
@@ -417,7 +413,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       val = 0
     nuevas_lecturas.append(val)
 
-    # Fecha registro
     val, _ = aplicar_cruce_secuencial(
         r,
         dict_api_f_reg_p,
@@ -426,7 +421,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     )
     nuevas_f_reg.append(val)
 
-    # Fecha instalacion
     val, _ = aplicar_cruce_secuencial(
         r,
         dict_api_f_inst_p,
@@ -452,17 +446,22 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       lecturas_limpias.append(0.0)
 
   df_conmedidor_pg["_Lectura_actual"] = lecturas_limpias
-  df_conmedidor_pg["_Fecha_registro"] = pd.to_datetime(
-      nuevas_f_reg, errors="coerce"
+
+  df_conmedidor_pg["_Fecha_registro"] = (
+      pd.to_datetime(nuevas_f_reg, errors="coerce")
+      .dt.tz_localize("UTC", nonexistent="shift_forward", ambiguous="NaT")
+      .dt.tz_convert(ZONA_MEXICO)
   )
-  df_conmedidor_pg["_Fecha_instalacion"] = pd.to_datetime(
-      nuevas_f_inst, errors="coerce"
+  df_conmedidor_pg["_Fecha_instalacion"] = (
+      pd.to_datetime(nuevas_f_inst, errors="coerce")
+      .dt.tz_localize("UTC", nonexistent="shift_forward", ambiguous="NaT")
+      .dt.tz_convert(ZONA_MEXICO)
   )
 
   df_conmedidor_pg = df_conmedidor_pg.drop(
       columns=["key_predio", "key_cliente"], errors="ignore"
   )
-  return df_conmedidor_pg
+  return df_conmedidor_pg, contador_predio, contador_cliente
 
 
 def ejecutar_sincronizacion_automatica():
@@ -479,6 +478,7 @@ def ejecutar_sincronizacion_automatica():
       "🔄 [CICLO INICIADO] Conectando a la API de MIAA para descarga de"
       " instalaciones..."
   )
+  st.rerun()
 
   df_filtrado = cargar_datos_api()
 
@@ -533,33 +533,9 @@ def ejecutar_sincronizacion_automatica():
         " registros locales..."
     )
 
-    df_api_merge = df_filtrado.copy()
-    df_api_merge["key_predio"] = (
-        df_api_merge["Predio_Viv"].astype(str).str.strip()
-        if "Predio_Viv" in df_api_merge.columns
-        else ""
+    df_actualizado, c_p, c_c = procesar_cruce_datos(
+        df_conmedidor_pg, df_filtrado
     )
-    df_api_merge["key_cliente"] = (
-        df_api_merge["Cliente"].astype(str).str.strip()
-        if "Cliente" in df_api_merge.columns
-        else ""
-    )
-
-    # Contadores temporales para el log de éxito de sincronización
-    c_p = 0
-    c_c = 0
-    # Contamos cuántos hacen match por predio vs cliente en este proceso
-    kp_set = set(df_api_merge["key_predio"])
-    kc_set = set(df_api_merge["key_cliente"])
-    for _, r in df_conmedidor_pg.iterrows():
-      kp = str(r.get("Predio_Viv", "")).strip()
-      kc = str(r.get("Cliente", "")).strip()
-      if kp and kp in kp_set and kp.lower() not in ["none", "nan", "", "0"]:
-        c_p += 1
-      elif kc and kc in kc_set and kc.lower() not in ["none", "nan", "", "0"]:
-        c_c += 1
-
-    df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
 
     agregar_log(
         f"📊 Cruce secuencial finalizado: {c_p:,} registros actualizados por"
@@ -606,10 +582,10 @@ def ejecutar_sincronizacion_automatica():
 
 
 # ==========================================
-# 5. TEMPORIZADOR Y RELOJ
+# 5. TEMPORIZADOR Y RELOJ (HORA MÉXICO)
 # ==========================================
 def calcular_siguiente_tiempo_reloj(minutos_intervalo):
-  ahora = datetime.now()
+  ahora = datetime.now(ZONA_MEXICO)
   minuto_actual = ahora.minute
   segundo_actual = ahora.second
 
@@ -648,14 +624,21 @@ total_registros_db = obtener_total_registros()
 df_filtrado = cargar_datos_api()
 
 total_serie_api = 0
-if not df_filtrado.empty and "serie" in df_filtrado.columns:
-  total_serie_api = df_filtrado["serie"].dropna().astype(str).str.strip()
-  total_serie_api = (
-      total_serie_api[
-          ~total_serie_api.str.lower().isin(["", "none", "nan", "null"])
-      ]
-      .count()
-  )
+total_predio_api_valido = 0
+total_predio_api_vacio = 0
+
+if not df_filtrado.empty:
+  if "serie" in df_filtrado.columns:
+    ts = df_filtrado["serie"].dropna().astype(str).str.strip()
+    total_serie_api = ts[
+        ~ts.str.lower().isin(["", "none", "nan", "null"])
+    ].count()
+
+  if "Predio_Viv" in df_filtrado.columns:
+    invalidos_ind = {"", "none", "nan", "null", "nat"}
+    p_series = df_filtrado["Predio_Viv"].astype(str).str.strip().str.lower()
+    total_predio_api_valido = (~p_series.isin(invalidos_ind)).sum()
+    total_predio_api_vacio = p_series.isin(invalidos_ind).sum()
 
 total_serie_pg_lleno = 0
 try:
@@ -693,6 +676,22 @@ with st.sidebar:
       help=(
           "Registros en la base de datos local que ya tienen el campo _Serie"
           " poblado."
+      ),
+  )
+
+  # Nuevos indicadores solicitados
+  st.metric(
+      label="API: Con Predio Registrado",
+      value=f"{total_predio_api_valido:,}",
+      help="Registros de la API que cuentan con un Predio_Viv válido.",
+  )
+
+  st.metric(
+      label="API: Sin Predio Registrado",
+      value=f"{total_predio_api_vacio:,}",
+      help=(
+          "Registros de la API sin Predio_Viv (se cruzan mediante el campo"
+          " Cliente)."
       ),
   )
 
@@ -773,7 +772,7 @@ st.markdown("---")
 @st.fragment(run_every=1)
 def renderizar_progreso_y_consola():
   if st.session_state.is_running and st.session_state.next_run_time:
-    ahora = datetime.now()
+    ahora = datetime.now(ZONA_MEXICO)
     if ahora >= st.session_state.next_run_time:
       ejecutar_sincronizacion_automatica()
       sig_tiempo, _ = calcular_siguiente_tiempo_reloj(
@@ -782,7 +781,7 @@ def renderizar_progreso_y_consola():
       st.session_state.next_run_time = sig_tiempo
 
   if st.session_state.is_running and st.session_state.next_run_time:
-    ahora = datetime.now()
+    ahora = datetime.now(ZONA_MEXICO)
     restante = (st.session_state.next_run_time - ahora).total_seconds()
     restante = max(0, int(restante))
 
@@ -984,7 +983,7 @@ with tab1:
       )
 
       if not df_pagina_pg.empty and not df_filtrado.empty:
-        df_pagina_pg = procesar_cruce_datos(df_pagina_pg, df_filtrado)
+        df_pagina_pg, _, _ = procesar_cruce_datos(df_pagina_pg, df_filtrado)
 
       st.dataframe(df_pagina_pg, use_container_width=True, height=400)
   else:
@@ -1008,7 +1007,7 @@ with tab2:
     t2_off = (t2_pag - 1) * t2_filas
     df_t2 = cargar_pagina_usuarios_db(limit=t2_filas, offset=t2_off)
     if not df_t2.empty and not df_filtrado.empty:
-      df_t2 = procesar_cruce_datos(df_t2, df_filtrado)
+      df_t2, _, _ = procesar_cruce_datos(df_t2, df_filtrado)
 
     st.dataframe(df_t2, use_container_width=True, height=350)
   else:
