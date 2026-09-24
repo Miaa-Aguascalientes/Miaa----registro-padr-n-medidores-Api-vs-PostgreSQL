@@ -45,7 +45,7 @@ st.markdown(
             font-family: 'Courier New', Courier, monospace;
             padding: 15px;
             border-radius: 6px;
-            height: 220px;
+            height: 480px;
             overflow-y: scroll;
             font-size: 13px;
             line-height: 1.4;
@@ -247,7 +247,6 @@ def procesar_cruce_datos(
 
   df_api = df_filtrado.copy()
 
-  # Limpiar llaves en API
   df_api["key_predio"] = (
       df_api["Predio_Viv"].astype(str).str.strip()
       if "Predio_Viv" in df_api.columns
@@ -261,7 +260,6 @@ def procesar_cruce_datos(
 
   invalidos = {"none", "nan", "", "nat", "0", "null", "None", "NaN"}
 
-  # Mapeo de usuario externo si existe
   def mapear_tipo_externo(val):
     if val in [True, 1, "1", "true", "True", "YES", "yes", "S", "s"]:
       return "Externo"
@@ -276,7 +274,6 @@ def procesar_cruce_datos(
   else:
     df_api["tipo_calculado"] = "MIAA"
 
-  # Separar diccionarios por Predio_Viv (válidos) y por Cliente (cuando Predio_Viv no tiene registros)
   df_api_con_predio = df_api[
       ~df_api["key_predio"].str.lower().isin(invalidos)
   ].copy()
@@ -285,7 +282,6 @@ def procesar_cruce_datos(
       & ~df_api["key_cliente"].str.lower().isin(invalidos)
   ].copy()
 
-  # Construir diccionarios para Predio_Viv
   dict_serie_p = dict(
       zip(df_api_con_predio["key_predio"], df_api_con_predio.get("serie", ""))
   )
@@ -331,7 +327,6 @@ def procesar_cruce_datos(
       )
   )
 
-  # Construir diccionarios para Cliente (solo para registros de API sin Predio_Viv)
   dict_serie_c = dict(
       zip(df_api_sin_predio["key_cliente"], df_api_sin_predio.get("serie", ""))
   )
@@ -378,7 +373,6 @@ def procesar_cruce_datos(
       )
   )
 
-  # Preparar llaves en Postgres
   df_conmedidor_pg["key_predio"] = (
       df_conmedidor_pg["Predio_Viv"].astype(str).str.strip()
       if "Predio_Viv" in df_conmedidor_pg.columns
@@ -412,15 +406,12 @@ def procesar_cruce_datos(
     kc = str(r.get("key_cliente", "")).strip()
 
     match_encontrado = False
-    match_tipo = None
 
-    # Regla estricta: Si Predio_Viv de la API tiene registros, se actualiza por Predio_Viv y YA NO pasa al campo Cliente
     if kp and kp.lower() not in invalidos and kp in dict_serie_p:
       val_s = dict_serie_p[kp]
       if pd.notna(val_s) and str(val_s).strip().lower() not in invalidos:
         predios_usados_pg.add(kp)
         match_encontrado = True
-        match_tipo = "predio"
         contador_predio += 1
 
         nuevas_series.append(val_s)
@@ -440,13 +431,11 @@ def procesar_cruce_datos(
         nuevas_f_inst.append(dict_f_inst_p.get(kp, pd.NaT))
 
     if not match_encontrado:
-      # Si el Predio_Viv no hizo match o no tiene registros en API, evaluamos por Cliente
       if kc and kc.lower() not in invalidos and kc in dict_serie_c:
         val_s = dict_serie_c[kc]
         if pd.notna(val_s) and str(val_s).strip().lower() not in invalidos:
           clientes_usados_pg.add(kc)
           match_encontrado = True
-          match_tipo = "cliente"
           contador_cliente += 1
 
           nuevas_series.append(val_s)
@@ -470,7 +459,6 @@ def procesar_cruce_datos(
           nuevas_f_inst.append(dict_f_inst_c.get(kc, pd.NaT))
 
     if not match_encontrado:
-      # Si no hubo coincidencia en ninguno, conservamos los valores originales de PG
       nuevas_series.append(r.get("_Serie", ""))
       nuevas_colonias.append(r.get("_Colonia", ""))
       nuevos_domicilios.append(r.get("_Domicilio", ""))
@@ -480,7 +468,6 @@ def procesar_cruce_datos(
       nuevas_f_reg.append(r.get("_Fecha_registro", pd.NaT))
       nuevas_f_inst.append(r.get("_Fecha_instalacion", pd.NaT))
 
-  # Auditoría para detectar registros de la API que no hicieron match ni por Predio_Viv ni por Cliente
   if registrar_auditoria:
     registros_no_encontrados = 0
     for _, api_row in df_api.iterrows():
@@ -518,8 +505,8 @@ def procesar_cruce_datos(
   df_conmedidor_pg["_Serie"] = nuevas_series
   df_conmedidor_pg["_Colonia"] = nuevas_colonias
   df_conmedidor_pg["_Domicilio"] = nuevos_domicilios
-  df_conmedidor_pg["_Instalador"] = nuevos_instaladores
-  df_conmedidor_pg["_Tipo_instalador"] = nuevos_tipos
+  df_conmedidor_pg["_Instalador"] = nuevas_instaladores
+  df_conmedidor_pg["_Tipo_instalador"] = nuevas_tipos
 
   lecturas_limpias = []
   for v in nuevas_lecturas:
@@ -533,7 +520,6 @@ def procesar_cruce_datos(
 
   df_conmedidor_pg["_Lectura_actual"] = lecturas_limpias
 
-  # --- CONVERSIÓN DE FECHAS SEGURA Y DIRECTA ---
   def convertir_a_zona_mexico_segura(serie_entrada):
     s_dt = pd.to_datetime(serie_entrada, errors="coerce")
     resultados = []
@@ -868,7 +854,7 @@ st.markdown("---")
 
 
 @st.fragment(run_every=1)
-def renderizar_progreso_y_consola():
+def renderizar_progreso_y_consola_y_limpieza():
   if st.session_state.is_running and st.session_state.next_run_time:
     ahora = datetime.now(ZONA_MEXICO)
     if ahora >= st.session_state.next_run_time:
@@ -908,69 +894,19 @@ def renderizar_progreso_y_consola():
     )
     st.progress(0.0)
 
-  st.markdown("#### 🖥️ Consola de Registros del Sistema")
-  logs_html = "<br>".join(st.session_state.logs)
-  st.markdown(
-      f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
-  )
+  st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
 
+  # Distribución en dos columnas: Izquierda Consola, Derecha Limpieza Masiva
+  col_consola, col_limpieza = st.columns([1, 1], gap="medium")
 
-renderizar_progreso_y_consola()
+  with col_consola:
+    st.markdown("#### 🖥️ Consola de Registros del Sistema")
+    logs_html = "<br>".join(st.session_state.logs)
+    st.markdown(
+        f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
+    )
 
-st.markdown("---")
-
-tab1, tab2 = st.tabs([
-    "🚰 Panel Principal y Gestión",
-    "📋 Tablas de Datos (PostgreSQL y API)",
-])
-
-with tab1:
-  st.markdown(
-      "<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>Gestión"
-      ' de Tabla PostgreSQL: usuarios_miaa_conmedidor</p>',
-      unsafe_allow_html=True,
-  )
-  if total_registros_db > 0:
-    c_m1, c_m2, c_m3 = st.columns(3)
-    with c_m1:
-      st.markdown(
-          """
-                <div class="metric-card">
-                    <div class="metric-content">
-                        <div class="metric-title">Total Registros (PG)</div>
-                        <div class="metric-value">{:,}</div>
-                    </div>
-                </div>
-            """.format(total_registros_db),
-          unsafe_allow_html=True,
-      )
-    with c_m2:
-      st.markdown(
-          """
-                <div class="metric-card">
-                    <div class="metric-content">
-                        <div class="metric-title">Estado de Carga</div>
-                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Optimizado (SQL Paginado)</div>
-                    </div>
-                </div>
-            """,
-          unsafe_allow_html=True,
-      )
-    with c_m3:
-      st.markdown(
-          """
-                <div class="metric-card">
-                    <div class="metric-content">
-                        <div class="metric-title">Rendimiento</div>
-                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Alta Velocidad</div>
-                    </div>
-                </div>
-            """,
-          unsafe_allow_html=True,
-      )
-
-    st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
-
+  with col_limpieza:
     with st.container(border=True):
       st.markdown(
           "#### 🧹 Limpieza Masiva de Campos (Sin eliminar registros)"
@@ -992,9 +928,9 @@ with tab1:
       ]
 
       campos_a_limpiar_masivo = []
-      cols_check = st.columns(4)
+      cols_check = st.columns(2)
       for i, campo in enumerate(campos_disponibles):
-        with cols_check[i % 4]:
+        with cols_check[i % 2]:
           if st.checkbox(f"Vaciar {campo}", key=f"chk_masivo_{campo}"):
             campos_a_limpiar_masivo.append(campo)
 
@@ -1004,10 +940,15 @@ with tab1:
           key="chk_confirmar_masivo",
       )
 
+      st.markdown(
+          "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
+      )
+
       if st.button(
           "Ejecutar Limpieza Masiva",
           type="primary",
           key="btn_ejecutar_masivo",
+          use_container_width=True,
       ):
         if not campos_a_limpiar_masivo:
           st.error("Por favor, selecciona al menos un campo para limpiar.")
@@ -1043,51 +984,60 @@ with tab1:
           except Exception as e:
             st.error(f"Error al ejecutar la limpieza masiva: {e}")
 
-    st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
-    with st.container(border=True):
+renderizar_progreso_y_consola_y_limpieza()
+
+st.markdown("---")
+
+tab1, tab2 = st.tabs([
+    "🚰 Panel Principal y Gestión",
+    "📋 Tablas de Datos (PostgreSQL y API)",
+])
+
+with tab1:
+  st.markdown(
+      "<p style='font-size:16px; font-weight:bold; margin-bottom:10px;'>Gestión"
+      ' de Tabla PostgreSQL: usuarios_miaa_conmedidor</p>',
+      unsafe_allow_html=True,
+  )
+  if total_registros_db > 0:
+    c_m1, c_m2, c_m3 = st.columns(3)
+    with c_m1:
       st.markdown(
-          "<p style='font-size:13px; font-weight:bold;"
-          " margin-bottom:8px;'>Vista Previa Paginada (Carga instantánea)</p>",
+          """
+                <div class="metric-card">
+                    <div class="metric-content">
+                        <div class="metric-title">Total Registros (PG)</div>
+                        <div class="metric-value">{:,}</div>
+                    </div>
+                </div>
+            """.format(total_registros_db),
           unsafe_allow_html=True,
       )
-
-      filas_por_pagina = 50
-      total_paginas = max(
-          1,
-          (total_registros_db // filas_por_pagina)
-          + (1 if total_registros_db % filas_por_pagina > 0 else 0),
+    with c_m2:
+      st.markdown(
+          """
+                <div class="metric-card">
+                    <div class="metric-content">
+                        <div class="metric-title">Estado de Carga</div>
+                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Optimizado (Consola Lateral)</div>
+                    </div>
+                </div>
+            """,
+          unsafe_allow_html=True,
       )
-
-      col_p1, col_p2 = st.columns([1, 3])
-      with col_p1:
-        pagina_actual = st.number_input(
-            "Página",
-            min_value=1,
-            max_value=total_paginas,
-            value=1,
-            step=1,
-            key="num_pag_t1",
-        )
-      with col_p2:
-        st.markdown(
-            f"<p style='margin-top: 25px; color: #94a3b8;'>Página"
-            f" {pagina_actual} de {total_paginas} (Mostrando bloques de 50"
-            " registros)</p>",
-            unsafe_allow_html=True,
-        )
-
-      offset_val = (pagina_actual - 1) * filas_por_pagina
-      df_pagina_pg = cargar_pagina_usuarios_db(
-          limit=filas_por_pagina, offset=offset_val
+    with c_m3:
+      st.markdown(
+          """
+                <div class="metric-card">
+                    <div class="metric-content">
+                        <div class="metric-title">Rendimiento</div>
+                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Alta Velocidad</div>
+                    </div>
+                </div>
+            """,
+          unsafe_allow_html=True,
       )
-
-      if not df_pagina_pg.empty and not df_filtrado.empty:
-        df_pagina_pg, _, _ = procesar_cruce_datos(
-            df_pagina_pg, df_filtrado, registrar_auditoria=False
-        )
-
-      st.dataframe(df_pagina_pg, use_container_width=True, height=400)
   else:
     st.warning("No se encontraron registros en la tabla.")
 
