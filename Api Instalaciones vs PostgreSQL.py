@@ -234,7 +234,7 @@ def cargar_datos_api():
 # ==========================================
 def ejecutar_sincronizacion_automatica():
   agregar_log(
-      "🔄 Iniciando ciclo: Conectando y autenticando con la API de MIAA..."
+      "🔄 Iniciando proceso: Conectando y autenticando con la API de MIAA..."
   )
   df_api = cargar_datos_api()
 
@@ -247,16 +247,13 @@ def ejecutar_sincronizacion_automatica():
 
   agregar_log(
       f"✅ API consultada con éxito. Registros obtenidos: {len(df_api):,}. "
-      "Actualizando base de datos mediante SQL optimizado..."
+      "Subiendo datos a tabla temporal de PostgreSQL..."
   )
 
   try:
     engine_pg = obtener_motor_postgres()
 
-    # Preparamos el DataFrame de la API con los nombres normalizados para el SQL
     df_staging = pd.DataFrame()
-
-    # Extraer columnas clave de la API de forma flexible
     col_predio = next(
         (
             c
@@ -344,7 +341,7 @@ def ejecutar_sincronizacion_automatica():
       df_staging["api_tipo"] = "MIAA"
 
     with engine_pg.begin() as conn:
-      # 1. Volcar datos limpios a una tabla temporal en PostgreSQL (Staging)
+      agregar_log("🔄 Procesando tabla temporal (Staging) en base de datos...")
       df_staging.to_sql(
           "temp_api_staging",
           con=conn,
@@ -354,8 +351,10 @@ def ejecutar_sincronizacion_automatica():
           chunksize=5000,
       )
 
-      # 2. Ejecutar actualización masiva ultrarrápida en SQL (Actualiza por Predio_Viv o por Cliente)
-      # Nota: Solo actualiza si el campo destino está vacío o nulo, ahorrando procesamiento innecesario.
+      agregar_log(
+          "🔄 Ejecutando cruce masivo y actualización en PostgreSQL por Predio"
+          " o Cliente..."
+      )
       query_update = text("""
                 UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
                 SET 
@@ -374,10 +373,10 @@ def ejecutar_sincronizacion_automatica():
                     (u."Cliente" IS NOT NULL AND TRIM(u."Cliente"::text) != '' AND u."Cliente"::text = t.api_cliente);
             """)
 
-      result = conn.execute(query_update)
+      conn.execute(query_update)
       agregar_log(
-          f"✅ ¡Sincronización SQL completada con éxito! Registros"
-          f" actualizados en la base de datos."
+          "✅ ¡Proceso completado con éxito! Registros actualizados en"
+          " PostgreSQL."
       )
     return True
 
@@ -405,12 +404,8 @@ with st.sidebar:
 
   st.markdown("#### Ejecución Manual")
   if st.button("🚀 Ejecutar Ahora", type="primary", use_container_width=True):
-    with st.spinner("Ejecutando proceso de sincronización rápida..."):
-      exito = ejecutar_sincronizacion_automatica()
-    if exito:
-      st.success("¡Proceso ejecutado con éxito!")
-    else:
-      st.error("Hubo un error en el proceso. Revisa la consola.")
+    # Ejecución directa sin st.spinner para permitir ver los logs en tiempo real
+    ejecutar_sincronizacion_automatica()
     st.rerun()
 
   st.markdown("---")
