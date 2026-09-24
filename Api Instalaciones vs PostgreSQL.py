@@ -8,22 +8,31 @@ import requests
 from sqlalchemy import create_engine, text
 import streamlit as st
 
-st.set_page_config(
-    page_title="Sistema Scada", 
-    page_icon="https://www.miaa.mx/favicon.ico", 
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
-
 ZONA_MEXICO = ZoneInfo("America/Mexico_City")
 
 st.set_page_config(
-    page_title="Gestor de Registros MIAA", page_icon="🚰", layout="wide"
+    page_title="Sistema Scada",
+    page_icon="https://www.miaa.mx/favicon.ico",
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
 st.markdown(
     """
     <style>
+        /* Ocultar el menú superior derecho de Streamlit (Deploy, Settings, Hamburger Menu) y el footer */
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        
+        /* Ocultar líneas divisorias horizontales superiores */
+        header hr, .stApp > header + div hr, [data-testid="stHeader"] hr {
+            display: none !important;
+        }
+        hr {
+            border-color: #334155; /* Si quieres mantener las demás líneas separadoras con un tono más sutil */
+        }
+        
         .metric-card {
             background-color: #1e293b;
             border: 1px solid #334155;
@@ -704,6 +713,10 @@ except Exception:
 # 7. BARRA LATERAL IZQUIERDA (SIDEBAR - CONFIGURACIÓN)
 # ==========================================
 with st.sidebar:
+  st.image(
+      "https://raw.githubusercontent.com/Miaa-Aguascalientes/Logos/38504978c8f77a4dac38ad476f74dbdee6af2cad/LogoMIAA.svg",
+      use_container_width=True,
+  )
   st.markdown("### 🚰 Panel de Control MIAA")
   st.markdown("---")
   st.markdown("#### ⚙️ Configuración")
@@ -750,9 +763,6 @@ with st.sidebar:
     agregar_log("⏹️ Temporizador detenido manualmente por el usuario.")
     st.warning("Temporizador detenido.")
     st.rerun()
-
-  st.markdown("---")
-  st.markdown("💡 *Todos los registros de la API deben reflejarse en PG.*")
 
 # ==========================================
 # 8. INTERFAZ PRINCIPAL VISUAL
