@@ -443,7 +443,7 @@ def procesar_cruce_datos(
   df_conmedidor_pg["_Colonia"] = nuevas_colonias
   df_conmedidor_pg["_Domicilio"] = nuevos_domicilios
   df_conmedidor_pg["_Instalador"] = nuevos_instaladores
-  df_conmedidor_pg["_Tipo_instalador"] = nuevos_tipos
+  df_conmedidor_pg["_Tipo_instalador"] = nuevas_tipos
 
   lecturas_limpias = []
   for v in nuevas_lecturas:
@@ -493,14 +493,14 @@ def procesar_cruce_datos(
 
 def ejecutar_sincronizacion_automatica():
   status_container = st.status(
-      "🔄 Iniciando sincronización...", expanded=True
+      "🔄 [15%] Iniciando sincronización...", expanded=True
   )
-  progress_bar = status_container.progress(0)
+  progress_bar = status_container.progress(15)
 
   status_container.update(
-      label="🌐 [1/4] Descargando registros de la API...", state="running"
+      label="🌐 [40%] [1/4] Descargando registros de la API...", state="running"
   )
-  progress_bar.progress(15)
+  progress_bar.progress(40)
   agregar_log(
       "🔄 [CICLO INICIADO] Conectando a la API de MIAA para descarga de"
       " instalaciones..."
@@ -523,9 +523,10 @@ def ejecutar_sincronizacion_automatica():
   )
 
   status_container.update(
-      label="📥 [2/4] Extrayendo registros de PostgreSQL...", state="running"
+      label="📥 [65%] [2/4] Extrayendo registros de PostgreSQL...",
+      state="running",
   )
-  progress_bar.progress(40)
+  progress_bar.progress(65)
   agregar_log(
       "🔄 [PG CONEXIÓN] Extrayendo registros de PostgreSQL para realizar el"
       " cruce..."
@@ -552,12 +553,12 @@ def ejecutar_sincronizacion_automatica():
 
     status_container.update(
         label=(
-            "⚙️ [3/4] Procesando cruce estricto y auditoría para"
+            "⚙️ [85%] [3/4] Procesando cruce estricto y auditoría para"
             f" {total_registros:,} registros..."
         ),
         state="running",
     )
-    progress_bar.progress(70)
+    progress_bar.progress(85)
     agregar_log(
         f"⚙️ Procesando actualización masiva para {total_registros:,}"
         " registros locales..."
@@ -568,9 +569,9 @@ def ejecutar_sincronizacion_automatica():
     )
 
     status_container.update(
-        label="💾 [4/4] Guardando cambios en PostgreSQL...", state="running"
+        label="💾 [95%] [4/4] Guardando cambios en PostgreSQL...", state="running"
     )
-    progress_bar.progress(90)
+    progress_bar.progress(95)
     agregar_log("💾 [PG ESCRITURA] Guardando cambios actualizados en la tabla...")
 
     try:
@@ -584,7 +585,7 @@ def ejecutar_sincronizacion_automatica():
       progress_bar.progress(100)
       status_container.update(
           label=(
-              "🎉 ¡Sincronización completada con éxito! Se actualizaron"
+              "🎉 [100%] ¡Sincronización completada con éxito! Se actualizaron"
               f" {total_registros:,} registros."
           ),
           state="complete",
@@ -682,49 +683,55 @@ except Exception:
   total_serie_pg_lleno = 0
 
 # ==========================================
-# 7. BARRA LATERAL IZQUIERDA (SIDEBAR)
+# 7. BARRA LATERAL IZQUIERDA (SIDEBAR - CONFIGURACIÓN)
 # ==========================================
 with st.sidebar:
   st.markdown("### 🚰 Panel de Control MIAA")
   st.markdown("---")
-  st.markdown("#### 📊 Indicadores de Cobertura")
+  st.markdown("#### ⚙️ Configuración")
 
-  st.metric(
-      label="Registros API con Serie",
-      value=f"{total_serie_api:,}",
-      help="Total de registros de la API que poseen una serie válida.",
+  opciones_intervalo = {
+      "Cada 1 minuto": 1,
+      "Cada 5 minutos": 5,
+      "Cada 10 minutos": 10,
+      "Cada 15 minutos": 15,
+      "Cada 30 minutos": 30,
+      "Cada hora": 60,
+  }
+  intervalo_sel = st.selectbox(
+      "Intervalo de sincronización", list(opciones_intervalo.keys())
   )
+  minutos_seleccionados = opciones_intervalo[intervalo_sel]
 
-  st.metric(
-      label="PostgreSQL (_Serie lleno)",
-      value=f"{total_serie_pg_lleno:,}",
-      help=(
-          "Registros en la base de datos local que ya tienen el campo _Serie"
-          " poblado."
-      ),
-  )
+  col_s1, col_s2 = st.columns(2)
+  with col_s1:
+    btn_iniciar = st.button("INICIAR", type="primary", use_container_width=True)
+  with col_s2:
+    btn_parar = st.button("PARAR", type="secondary", use_container_width=True)
 
-  st.metric(
-      label="API: Con Predio Registrado",
-      value=f"{total_predio_api_valido:,}",
-      help="Registros de la API que cuentan con un Predio_Viv válido.",
-  )
+  if btn_iniciar:
+    st.session_state.is_running = True
+    st.session_state.intervalo_minutos_sel = minutos_seleccionados
 
-  st.metric(
-      label="API: Sin Predio Registrado",
-      value=f"{total_predio_api_vacio:,}",
-      help="Registros de la API sin Predio_Viv válido.",
-  )
+    sig_tiempo, _ = calcular_siguiente_tiempo_reloj(minutos_seleccionados)
+    st.session_state.next_run_time = sig_tiempo
 
-  if total_serie_api > 0:
-    porcentaje_cobertura = min(
-        100.0, (total_serie_pg_lleno / total_serie_api) * 100
+    agregar_log(
+        f"▶️ Temporizador activado. Próxima ejecución sincronizada al reloj a"
+        f" las {sig_tiempo.strftime('%H:%M:%S')}."
     )
-    st.markdown(f"**Sincronización:** {porcentaje_cobertura:.1f}%")
-    st.progress(porcentaje_cobertura / 100.0)
-  else:
-    st.markdown("**Sincronización:** 0.0%")
-    st.progress(0.0)
+    st.success(
+        f"¡Temporizador iniciado! Siguiente ejecución a las"
+        f" {sig_tiempo.strftime('%H:%M:%S')}."
+    )
+    st.rerun()
+
+  if btn_parar:
+    st.session_state.is_running = False
+    st.session_state.next_run_time = None
+    agregar_log("⏹️ Temporizador detenido manualmente por el usuario.")
+    st.warning("Temporizador detenido.")
+    st.rerun()
 
   st.markdown("---")
   st.markdown("💡 *Todos los registros de la API deben reflejarse en PG.*")
@@ -737,51 +744,51 @@ st.markdown(
 )
 st.markdown("---")
 
-st.markdown("#### Configuración")
+# Indicadores de Cobertura en la Zona Principal
+st.markdown("#### 📊 Indicadores de Cobertura")
+col_ind1, col_ind2, col_ind3, col_ind4, col_ind5 = st.columns(5)
 
-with st.container(border=True):
-  c2, c3, c4 = st.columns([3, 1, 1])
-  with c2:
-    opciones_intervalo = {
-        "Cada 1 minuto": 1,
-        "Cada 5 minutos": 5,
-        "Cada 10 minutos": 10,
-        "Cada 15 minutos": 15,
-        "Cada 30 minutos": 30,
-        "Cada hora": 60,
-    }
-    intervalo_sel = st.selectbox(
-        "Intervalo", list(opciones_intervalo.keys()), label_visibility="collapsed"
+with col_ind1:
+  st.metric(
+      label="Registros API con Serie",
+      value=f"{total_serie_api:,}",
+      help="Total de registros de la API que poseen una serie válida.",
+  )
+
+with col_ind2:
+  st.metric(
+      label="PostgreSQL (_Serie lleno)",
+      value=f"{total_serie_pg_lleno:,}",
+      help=(
+          "Registros en la base de datos local que ya tienen el campo _Serie"
+          " poblado."
+      ),
+  )
+
+with col_ind3:
+  st.metric(
+      label="API: Con Predio Registrado",
+      value=f"{total_predio_api_valido:,}",
+      help="Registros de la API que cuentan con un Predio_Viv válido.",
+  )
+
+with col_ind4:
+  st.metric(
+      label="API: Sin Predio Registrado",
+      value=f"{total_predio_api_vacio:,}",
+      help="Registros de la API sin Predio_Viv válido.",
+  )
+
+with col_ind5:
+  if total_serie_api > 0:
+    porcentaje_cobertura = min(
+        100.0, (total_serie_pg_lleno / total_serie_api) * 100
     )
-    minutos_seleccionados = opciones_intervalo[intervalo_sel]
-  with c3:
-    btn_iniciar = st.button("INICIAR", type="primary", use_container_width=True)
-  with c4:
-    btn_parar = st.button("PARAR", type="secondary", use_container_width=True)
-
-if btn_iniciar:
-  st.session_state.is_running = True
-  st.session_state.intervalo_minutos_sel = minutos_seleccionados
-
-  sig_tiempo, _ = calcular_siguiente_tiempo_reloj(minutos_seleccionados)
-  st.session_state.next_run_time = sig_tiempo
-
-  agregar_log(
-      f"▶️ Temporizador activado. Próxima ejecución sincronizada al reloj a"
-      f" las {sig_tiempo.strftime('%H:%M:%S')}."
-  )
-  st.success(
-      f"¡Temporizador iniciado! Siguiente ejecución a las"
-      f" {sig_tiempo.strftime('%H:%M:%S')}."
-  )
-  st.rerun()
-
-if btn_parar:
-  st.session_state.is_running = False
-  st.session_state.next_run_time = None
-  agregar_log("⏹️ Temporizador detenido manualmente por el usuario.")
-  st.warning("Temporizador detenido.")
-  st.rerun()
+    st.metric(
+        label="Sincronización", value=f"{porcentaje_cobertura:.1f}%"
+    )
+  else:
+    st.metric(label="Sincronización", value="0.0%")
 
 st.markdown("---")
 
@@ -822,7 +829,8 @@ def renderizar_progreso_y_consola_y_limpieza():
     st.markdown(
         "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
         " margin-bottom: 4px;'>⏸️ Temporizador inactivo. Haz clic en INICIAR"
-        " para activar el ciclo automático alineado al reloj.</p>",
+        " en la barra lateral para activar el ciclo automático alineado al"
+        " reloj.</p>",
         unsafe_allow_html=True,
     )
     st.progress(0.0)
