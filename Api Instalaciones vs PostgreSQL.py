@@ -271,6 +271,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   else:
     df_api_merge["key_cliente"] = ""
 
+  # Función auxiliar para crear diccionarios de búsqueda dual (por Predio y por Cliente)
   def crear_diccionarios(df_api, col_nombre):
     d_predio = {}
     d_cliente = {}
@@ -318,6 +319,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       df_api_merge, "fechaInstalacion"
   )
 
+  # Preparar columnas de enlace en PostgreSQL
   col_pg_predio = next(
       (
           c
@@ -349,6 +351,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   else:
     df_conmedidor_pg["pg_key_cliente"] = ""
 
+  # Lógica de resolución: Primero busca por Predio_Viv, si no encuentra, busca por Cliente
   def resolver_valor(row, d_p, d_c, val_actual):
     p_k = row.get("pg_key_predio", "")
     if (
@@ -509,73 +512,62 @@ if "total_seconds_interval" not in st.session_state:
   st.session_state.total_seconds_interval = 300
 
 # ==========================================
-# 6. CONFIGURACIÓN EN BARRA LATERAL (SIDEBAR)
-# ==========================================
-with st.sidebar:
-  st.markdown("<h2>⚙️ Configuración</h2>", unsafe_allow_html=True)
-  st.markdown("---")
-
-  st.markdown("#### Ejecución Manual")
-  if st.button("🚀 Ejecutar Ahora", type="primary", use_container_width=True):
-    with st.spinner("Ejecutando proceso de sincronización..."):
-      exito = ejecutar_sincronizacion_automatica()
-    if exito:
-      st.success("¡Proceso ejecutado con éxito!")
-    else:
-      st.error("Hubo un error en el proceso. Revisa la consola.")
-    st.rerun()
-
-  st.markdown("---")
-  st.markdown("#### Ejecución Periódica")
-
-  opciones_intervalo = {
-      "Cada 1 minuto": 60,
-      "Cada 5 minutos": 300,
-      "Cada 15 minutos": 900,
-      "Cada 30 minutos": 1800,
-      "Cada hora": 3600,
-  }
-  intervalo_sel = st.selectbox(
-      "Seleccionar Intervalo", list(opciones_intervalo.keys())
-  )
-  total_segundos = opciones_intervalo[intervalo_sel]
-
-  col_sb1, col_sb2 = st.columns(2)
-  with col_sb1:
-    btn_iniciar = st.button("INICIAR", type="primary", use_container_width=True)
-  with col_sb2:
-    btn_parar = st.button("PARAR", type="secondary", use_container_width=True)
-
-  if btn_iniciar:
-    st.session_state.is_running = True
-    st.session_state.total_seconds_interval = total_segundos
-    st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
-        seconds=total_segundos
-    )
-    agregar_log(
-        f"Temporizador iniciado. Próxima ejecución en {intervalo_sel.lower()}."
-    )
-    st.success("¡Temporizador iniciado!")
-    st.rerun()
-
-  if btn_parar:
-    st.session_state.is_running = False
-    st.session_state.next_run_time = None
-    agregar_log("Temporizador detenido manualmente por el usuario.")
-    st.warning("Temporizador detenido.")
-    st.rerun()
-
-# ==========================================
-# 7. TÍTULO PRINCIPAL
+# 6. TÍTULO Y PANEL DE CONFIGURACIÓN DE TIEMPO
 # ==========================================
 st.markdown(
     "<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True
 )
 st.markdown("---")
 
+st.markdown("#### Configuración")
+
+with st.container(border=True):
+  c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+  with c1:
+    modo = st.selectbox(
+        "Modo", ["Periódico"], label_visibility="collapsed"
+    )
+  with c2:
+    opciones_intervalo = {
+        "Cada 1 minuto": 60,
+        "Cada 5 minutos": 300,
+        "Cada 15 minutos": 900,
+        "Cada 30 minutos": 1800,
+        "Cada hora": 3600,
+    }
+    intervalo_sel = st.selectbox(
+        "Intervalo", list(opciones_intervalo.keys()), label_visibility="collapsed"
+    )
+    total_segundos = opciones_intervalo[intervalo_sel]
+  with c3:
+    btn_iniciar = st.button("INICIAR", type="primary", use_container_width=True)
+  with c4:
+    btn_parar = st.button("PARAR", type="secondary", use_container_width=True)
+
+if btn_iniciar:
+  st.session_state.is_running = True
+  st.session_state.total_seconds_interval = total_segundos
+  st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
+      seconds=total_segundos
+  )
+  agregar_log(
+      f"Temporizador iniciado. Próxima ejecución en {intervalo_sel.lower()}."
+  )
+  st.success("¡Temporizador iniciado correctamente!")
+  st.rerun()
+
+if btn_parar:
+  st.session_state.is_running = False
+  st.session_state.next_run_time = None
+  agregar_log("Temporizador detenido manualmente por el usuario.")
+  st.warning("Temporizador detenido.")
+  st.rerun()
+
+st.markdown("---")
+
 
 # ==========================================
-# 8. FRAGMENTO AISLADO CON BARRA DE PROGRESO, CONTADOR Y CONSOLA
+# 7. FRAGMENTO AISLADO CON BARRA DE PROGRESO, CONTADOR Y CONSOLA
 # ==========================================
 @st.fragment(run_every=1)
 def renderizar_progreso_y_consola():
@@ -610,7 +602,7 @@ def renderizar_progreso_y_consola():
     st.markdown(
         "<p style='font-size: 13px; color: #94a3b8; font-style: italic;"
         " margin-bottom: 4px;'>⏸️ Temporizador inactivo. Haz clic en INICIAR"
-        " en la barra lateral para activar el ciclo automático.</p>",
+        " para activar el ciclo automático.</p>",
         unsafe_allow_html=True,
     )
     st.progress(0.0)
@@ -627,7 +619,7 @@ renderizar_progreso_y_consola()
 st.markdown("---")
 
 # ==========================================
-# 9. OBTENCIÓN DE DATOS PARA INDICADORES
+# 8. OBTENCIÓN DE DATOS PARA INDICADORES
 # ==========================================
 total_registros_db = obtener_total_registros()
 total_con_serie = obtener_total_con_serie()
@@ -635,7 +627,7 @@ df_filtrado = cargar_datos_api()
 total_registros_api = len(df_filtrado) if not df_filtrado.empty else 0
 
 # ==========================================
-# 10. TARJETAS DE INDICADORES (A MERO ARRIBA)
+# 9. TARJETAS DE INDICADORES (A MERO ARRIBA)
 # ==========================================
 if total_registros_db > 0:
   c_m1, c_m2, c_m3 = st.columns(3)
@@ -682,7 +674,7 @@ if total_registros_db > 0:
   st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
 
 # ==========================================
-# 11. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
+# 10. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
 # ==========================================
 tab1, tab2 = st.tabs([
     "🚰 Panel Principal y Gestión",
