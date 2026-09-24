@@ -20,17 +20,20 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-        /* Ocultar el menú superior derecho de Streamlit (Deploy, Settings, Hamburger Menu) y el footer */
+        /* Ocultar elementos predeterminados de la interfaz de Streamlit */
         #MainMenu {visibility: hidden;}
         header {visibility: hidden;}
         footer {visibility: hidden;}
         
-        /* Ocultar líneas divisorias horizontales superiores */
-        header hr, .stApp > header + div hr, [data-testid="stHeader"] hr {
-            display: none !important;
+        /* Eliminar el espacio superior por defecto de la página y los contenedores */
+        .block-container {
+            padding-top: 1rem !important;
+            padding-bottom: 0rem !important;
         }
-        hr {
-            border-color: #334155; /* Si quieres mantener las demás líneas separadoras con un tono más sutil */
+        
+        /* Ocultar líneas divisorias horizontales superiores o automáticas */
+        header hr, .stApp > header + div hr, [data-testid="stHeader"] hr, hr {
+            display: none !important;
         }
         
         .metric-card {
@@ -467,7 +470,7 @@ def procesar_cruce_datos(
   df_conmedidor_pg["_Serie"] = nuevas_series
   df_conmedidor_pg["_Colonia"] = nuevas_colonias
   df_conmedidor_pg["_Domicilio"] = nuevos_domicilios
-  df_conmedidor_pg["_Instalador"] = nuevos_instaladores
+  df_conmedidor_pg["_Instalador"] = nuevas_instaladores
   df_conmedidor_pg["_Tipo_instalador"] = nuevos_tipos
 
   lecturas_limpias = []
@@ -765,17 +768,16 @@ with st.sidebar:
     st.rerun()
 
 # ==========================================
-# 8. INTERFAZ PRINCIPAL VISUAL
+# 8. INTERFAZ PRINCIPAL VISUAL (TÍTULO MÁS ARRIBA)
 # ==========================================
 st.markdown(
     """
-    <div style="text-align: center; margin-bottom: 20px;">
+    <div style="text-align: center; margin-top: -20px; margin-bottom: 10px;">
         <h2 style="color: #f8fafc; font-weight: 700;">MIAA - Sistema de Registros e Instalaciones</h2>
     </div>
     """,
     unsafe_allow_html=True,
 )
-st.markdown("---")
 
 # Indicadores de Cobertura con Estilo de Tarjetas Personalizadas
 col_ind1, col_ind2, col_ind3 = st.columns(3)
@@ -827,7 +829,9 @@ with col_ind3:
       unsafe_allow_html=True,
   )
 
-st.markdown("---")
+st.markdown(
+    "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
+)
 
 
 @st.fragment(run_every=1)
@@ -964,7 +968,9 @@ def renderizar_progreso_y_consola_y_limpieza():
 
 renderizar_progreso_y_consola_y_limpieza()
 
-st.markdown("---")
+st.markdown(
+    "<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True
+)
 
 tab1, tab2 = st.tabs([
     "🚰 Panel Principal y Gestión",
@@ -1040,7 +1046,9 @@ with tab2:
   else:
     st.warning("No hay datos cargados de PostgreSQL.")
 
-  st.markdown("---")
+  st.markdown(
+      "<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True
+  )
 
   st.subheader(
       "🌐 Tabla: Datos de la API de Instalación (Todos los registros)"
