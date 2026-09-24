@@ -67,7 +67,7 @@ if "logs" not in st.session_state:
 def agregar_log(mensaje):
   timestamp = datetime.now(ZONA_MEXICO).strftime("%H:%M:%S")
   st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
-  if len(st.session_state.logs) > 200:
+  if len(st.session_state.logs) > 300:
     st.session_state.logs.pop()
 
 
@@ -93,7 +93,8 @@ def obtener_total_registros():
           text('SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor"')
       )
       return result.scalar()
-  except Exception:
+  except Exception as e:
+    agregar_log(f"⚠️ [AVISO DB] No se pudo obtener el conteo de registros: {e}")
     return 0
 
 
@@ -108,13 +109,15 @@ def cargar_pagina_usuarios_db(limit=50, offset=0):
     return pd.read_sql(
         query, con=engine_pg, params={"lim": limit, "off": offset}
     )
-  except Exception:
+  except Exception as e:
+    agregar_log(f"❌ [ERROR DB] Error al cargar página de PostgreSQL: {e}")
     return pd.DataFrame()
 
 
 @st.cache_data(ttl=300)
 def cargar_datos_api():
   try:
+    agregar_log("🌐 [API] Conectando al servicio de autenticación de MIAA...")
     usuario = st.secrets["api"]["usuario"]
     password = st.secrets["api"]["password"]
     res_login = requests.post(
@@ -123,10 +126,14 @@ def cargar_datos_api():
         headers={"Content-Type": "application/json"},
     )
     if res_login.status_code == 200:
+      agregar_log(
+          "✅ [API] Autenticación exitosa. Obteniendo token de acceso..."
+      )
       token = res_login.json().get("token") or res_login.json().get(
           "access_token"
       )
       if token:
+        agregar_log("🌐 [API] Solicitando listado completo de instalaciones...")
         res_inst = requests.get(
             url_instalaciones,
             headers={
@@ -148,6 +155,10 @@ def cargar_datos_api():
               df = pd.DataFrame([data])
 
           if not df.empty:
+            agregar_log(
+                f"📦 [API] Datos recibidos con éxito. Total filas brutas:"
+                f" {len(df):,}"
+            )
             if "numeroCliente" in df.columns:
               df["Cliente"] = df["numeroCliente"]
             elif "numero_cliente" in df.columns:
@@ -231,30 +242,40 @@ def cargar_datos_api():
             df = df[cols_prioritarias + otras_cols]
 
           return df
+    agregar_log(
+        f"❌ [API ERROR] Falló la conexión o autenticación. Código de estado:"
+        f" {res_login.status_code}"
+    )
     return pd.DataFrame()
-  except Exception:
+  except Exception as e:
+    agregar_log(
+        f"❌ [API EXCEPCIÓN] Error crítico al consultar la API externa: {e}"
+    )
     return pd.DataFrame()
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE ESTRICTO SEGÚN REGLA API -> POSTGRES
+# 4. FUNCIÓN DE CRUCE ESTRICTO (SOLO PREDIO_VIV)
 # ==========================================
 def procesar_cruce_datos(
     df_conmedidor_pg, df_filtrado, registrar_auditoria=False
 ):
   if df_filtrado.empty or df_conmedidor_pg.empty:
+    agregar_log(
+        "⚠️ [CRUCE] Uno de los DataFrames está vacío. No se puede realizar el"
+        " cruce."
+    )
     return df_conmedidor_pg, 0, 0
 
+  agregar_log(
+      "⚙️ [CRUCE] Iniciando procesamiento y estructuración de llaves de"
+      " cruce..."
+  )
   df_api = df_filtrado.copy()
 
   df_api["key_predio"] = (
       df_api["Predio_Viv"].astype(str).str.strip()
       if "Predio_Viv" in df_api.columns
-      else ""
-  )
-  df_api["key_cliente"] = (
-      df_api["Cliente"].astype(str).str.strip()
-      if "Cliente" in df_api.columns
       else ""
   )
 
@@ -276,11 +297,11 @@ def procesar_cruce_datos(
 
   df_api_con_predio = df_api[
       ~df_api["key_predio"].str.lower().isin(invalidos)
-  ].copy()
-  df_api_sin_predio = df_api[
-      df_api["key_predio"].str.lower().isin(invalidos)
-      & ~df_api["key_cliente"].str.lower().isin(invalidos)
-  ].copy()
+    ].copy()
+  agregar_log(
+      f"🔍 [CRUCE] Registros válidos de la API con Predio_Viv:"
+      f" {len(df_api_con_predio):,}"
+  )
 
   dict_serie_p = dict(
       zip(df_api_con_predio["key_predio"], df_api_con_predio.get("serie", ""))
@@ -327,65 +348,13 @@ def procesar_cruce_datos(
       )
   )
 
-  dict_serie_c = dict(
-      zip(df_api_sin_predio["key_cliente"], df_api_sin_predio.get("serie", ""))
-  )
-  dict_colonia_c = dict(
-      zip(
-          df_api_sin_predio["key_cliente"],
-          df_api_sin_predio.get("colonia", ""),
-      )
-  )
-  dict_domicilio_c = dict(
-      zip(
-          df_api_sin_predio["key_cliente"],
-          df_api_sin_predio.get("domicilio", ""),
-      )
-  )
-  dict_instalador_c = dict(
-      zip(
-          df_api_sin_predio["key_cliente"],
-          df_api_sin_predio.get("usuarioNombre", ""),
-      )
-  )
-  dict_lectura_c = dict(
-      zip(
-          df_api_sin_predio["key_cliente"],
-          df_api_sin_predio.get("lecturaActual", 0),
-      )
-  )
-  dict_f_reg_c = dict(
-      zip(
-          df_api_sin_predio["key_cliente"],
-          df_api_sin_predio.get("fechaRegistro", ""),
-      )
-  )
-  dict_f_inst_c = dict(
-      zip(
-          df_api_sin_predio["key_cliente"],
-          df_api_sin_predio.get("fechaInstalacion", ""),
-      )
-  )
-  dict_tipo_c = dict(
-      zip(
-          df_api_sin_predio["key_cliente"],
-          df_api_sin_predio.get("tipo_calculado", "MIAA"),
-      )
-  )
-
   df_conmedidor_pg["key_predio"] = (
       df_conmedidor_pg["Predio_Viv"].astype(str).str.strip()
       if "Predio_Viv" in df_conmedidor_pg.columns
       else ""
   )
-  df_conmedidor_pg["key_cliente"] = (
-      df_conmedidor_pg["Cliente"].astype(str).str.strip()
-      if "Cliente" in df_conmedidor_pg.columns
-      else ""
-  )
 
   predios_usados_pg = set()
-  clientes_usados_pg = set()
 
   nuevas_series, nuevas_colonias, nuevos_domicilios, nuevos_instaladores, nuevos_tipos, nuevas_lecturas, nuevas_f_reg, nuevas_f_inst = (
       [],
@@ -399,11 +368,13 @@ def procesar_cruce_datos(
   )
 
   contador_predio = 0
-  contador_cliente = 0
 
+  agregar_log(
+      "🔄 [CRUCE] Ejecutando cruce estricto por campo 'Predio_Viv' con base"
+      " de datos local..."
+  )
   for _, r in df_conmedidor_pg.iterrows():
     kp = str(r.get("key_predio", "")).strip()
-    kc = str(r.get("key_cliente", "")).strip()
 
     match_encontrado = False
 
@@ -431,34 +402,6 @@ def procesar_cruce_datos(
         nuevas_f_inst.append(dict_f_inst_p.get(kp, pd.NaT))
 
     if not match_encontrado:
-      if kc and kc.lower() not in invalidos and kc in dict_serie_c:
-        val_s = dict_serie_c[kc]
-        if pd.notna(val_s) and str(val_s).strip().lower() not in invalidos:
-          clientes_usados_pg.add(kc)
-          match_encontrado = True
-          contador_cliente += 1
-
-          nuevas_series.append(val_s)
-          nuevas_colonias.append(dict_colonia_c.get(kc, r.get("_Colonia", "")))
-          nuevos_domicilios.append(
-              dict_domicilio_c.get(kc, r.get("_Domicilio", ""))
-          )
-          nuevos_instaladores.append(
-              dict_instalador_c.get(kc, r.get("_Instalador", ""))
-          )
-          nuevos_tipos.append(
-              dict_tipo_c.get(kc, r.get("_Tipo_instalador", ""))
-          )
-
-          lec = dict_lectura_c.get(kc, 0)
-          nuevas_lecturas.append(
-              lec if not isinstance(lec, (list, dict)) else 0
-          )
-
-          nuevas_f_reg.append(dict_f_reg_c.get(kc, pd.NaT))
-          nuevas_f_inst.append(dict_f_inst_c.get(kc, pd.NaT))
-
-    if not match_encontrado:
       nuevas_series.append(r.get("_Serie", ""))
       nuevas_colonias.append(r.get("_Colonia", ""))
       nuevos_domicilios.append(r.get("_Domicilio", ""))
@@ -472,41 +415,35 @@ def procesar_cruce_datos(
     registros_no_encontrados = 0
     for _, api_row in df_api.iterrows():
       kp_val = str(api_row.get("key_predio", "")).strip()
-      kc_val = str(api_row.get("key_cliente", "")).strip()
 
       encontrado = False
       if kp_val and kp_val in predios_usados_pg:
         encontrado = True
-      elif kc_val and kc_val in clientes_usados_pg:
-        encontrado = True
 
-      if not encontrado and (
-          kp_val.lower() not in invalidos or kc_val.lower() not in invalidos
-      ):
+      if not encontrado and kp_val.lower() not in invalidos:
         registros_no_encontrados += 1
         serie_api = api_row.get("serie", "S/N")
         agregar_log(
             f"⚠️ [API NO MATCH] Registro API no encontrado en Postgres ->"
-            f" Cliente: '{kc_val}' | Predio_Viv: '{kp_val}' | Serie:"
-            f" '{serie_api}'"
+            f" Predio_Viv: '{kp_val}' | Serie: '{serie_api}'"
         )
 
     if registros_no_encontrados > 0:
       agregar_log(
-          f"🔍 Total de registros de la API sin coincidencia en PostgreSQL:"
-          f" {registros_no_encontrados}"
+          f"🔍 [AUDITORÍA] Total de registros de la API sin coincidencia en"
+          f" PostgreSQL: {registros_no_encontrados}"
       )
     else:
       agregar_log(
-          "✅ Todos los registros válidos de la API hicieron match"
+          "✅ [AUDITORÍA] Todos los registros válidos de la API hicieron match"
           " correctamente."
       )
 
   df_conmedidor_pg["_Serie"] = nuevas_series
   df_conmedidor_pg["_Colonia"] = nuevas_colonias
   df_conmedidor_pg["_Domicilio"] = nuevos_domicilios
-  df_conmedidor_pg["_Instalador"] = nuevas_instaladores
-  df_conmedidor_pg["_Tipo_instalador"] = nuevas_tipos
+  df_conmedidor_pg["_Instalador"] = nuevos_instaladores
+  df_conmedidor_pg["_Tipo_instalador"] = nuevos_tipos
 
   lecturas_limpias = []
   for v in nuevas_lecturas:
@@ -546,10 +483,12 @@ def procesar_cruce_datos(
       nuevas_f_inst
   )
 
-  df_conmedidor_pg = df_conmedidor_pg.drop(
-      columns=["key_predio", "key_cliente"], errors="ignore"
+  df_conmedidor_pg = df_conmedidor_pg.drop(columns=["key_predio"], errors="ignore")
+  agregar_log(
+      f"✅ [CRUCE COMPLETO] Cruce finalizado con éxito. Coincidencias por"
+      f" Predio_Viv: {contador_predio:,}"
   )
-  return df_conmedidor_pg, contador_predio, contador_cliente
+  return df_conmedidor_pg, contador_predio, 0
 
 
 def ejecutar_sincronizacion_automatica():
@@ -597,6 +536,10 @@ def ejecutar_sincronizacion_automatica():
     df_conmedidor_pg = pd.read_sql(
         'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg
     )
+    agregar_log(
+        f"✅ [PG OK] Se extrajeron {len(df_conmedidor_pg):,} registros desde"
+        " PostgreSQL exitosamente."
+    )
   except Exception as ex:
     status_container.update(
         label="❌ Error al leer la base de datos", state="error"
@@ -620,13 +563,8 @@ def ejecutar_sincronizacion_automatica():
         " registros locales..."
     )
 
-    df_actualizado, c_p, c_c = procesar_cruce_datos(
+    df_actualizado, c_p, _ = procesar_cruce_datos(
         df_conmedidor_pg, df_filtrado, registrar_auditoria=True
-    )
-
-    agregar_log(
-        f"📊 Cruce finalizado: {c_p:,} registros actualizados por Predio_Viv"
-        f" y {c_c:,} registros actualizados por Cliente."
     )
 
     status_container.update(
@@ -775,10 +713,7 @@ with st.sidebar:
   st.metric(
       label="API: Sin Predio Registrado",
       value=f"{total_predio_api_vacio:,}",
-      help=(
-          "Registros de la API sin Predio_Viv (se cruzan mediante el campo"
-          " Cliente)."
-      ),
+      help="Registros de la API sin Predio_Viv válido.",
   )
 
   if total_serie_api > 0:
@@ -805,9 +740,7 @@ st.markdown("---")
 st.markdown("#### Configuración")
 
 with st.container(border=True):
-  c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
-  with c1:
-    modo = st.selectbox("Modo", ["Periódico"], label_visibility="collapsed")
+  c2, c3, c4 = st.columns([3, 1, 1])
   with c2:
     opciones_intervalo = {
         "Cada 1 minuto": 1,
@@ -896,7 +829,6 @@ def renderizar_progreso_y_consola_y_limpieza():
 
   st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
 
-  # Distribución en dos columnas: Izquierda Consola, Derecha Limpieza Masiva
   col_consola, col_limpieza = st.columns([1, 1], gap="medium")
 
   with col_consola:
