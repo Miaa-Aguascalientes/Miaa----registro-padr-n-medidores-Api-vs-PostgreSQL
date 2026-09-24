@@ -102,6 +102,22 @@ def obtener_total_registros():
     return 0
 
 
+@st.cache_data(ttl=600)
+def obtener_total_con_serie():
+  try:
+    engine_pg = obtener_motor_postgres()
+    with engine_pg.connect() as conn:
+      result = conn.execute(
+          text(
+              'SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor" WHERE'
+              ' "_Serie" IS NOT NULL AND TRIM(CAST("_Serie" AS TEXT)) != \'\''
+          )
+      )
+      return result.scalar()
+  except Exception:
+    return 0
+
+
 @st.cache_data(ttl=60)
 def cargar_pagina_usuarios_db(limit=50, offset=0):
   try:
@@ -153,7 +169,6 @@ def cargar_datos_api():
               df = pd.DataFrame([data])
 
           if not df.empty:
-            # Eliminar columnas de fotos/imágenes
             cols_a_remover = [
                 c
                 for c in df.columns
@@ -164,7 +179,6 @@ def cargar_datos_api():
             ]
             df = df.drop(columns=cols_a_remover, errors="ignore")
 
-            # CREACIÓN OFICIAL DEL CAMPO Predio_Viv (Incluyendo unidades en 0 o vacías)
             col_api_predio = next(
                 (
                     c
@@ -209,7 +223,6 @@ def cargar_datos_api():
 
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-              # Mover la columna Predio_Viv justo a la izquierda del campo predio
               if "predio" in df.columns:
                 cols = list(df.columns)
                 cols.remove("Predio_Viv")
@@ -439,7 +452,6 @@ with st.container(border=True):
 if btn_iniciar:
   st.session_state.is_running = True
   st.session_state.total_seconds_interval = total_segundos
-  # Cálculo de próxima ejecución basado en la hora de México
   st.session_state.next_run_time = datetime.now(ZONA_MEXICO) + timedelta(
       seconds=total_segundos
   )
@@ -520,6 +532,7 @@ tab1, tab2 = st.tabs([
 ])
 
 total_registros_db = obtener_total_registros()
+total_con_serie = obtener_total_con_serie()
 df_filtrado = cargar_datos_api()
 
 with tab1:
@@ -547,10 +560,10 @@ with tab1:
       st.markdown(
           f"""
                 <div class="metric-card">
-                    <div class="metric-icon-box" style="color: #4ade80;"><i class="fa-solid fa-circle-check"></i></div>
+                    <div class="metric-icon-box" style="color: #4ade80;"><i class="fa-solid fa-barcode"></i></div>
                     <div class="metric-content">
-                        <div class="metric-title">Estado de Carga</div>
-                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Optimizado (SQL Paginado)</div>
+                        <div class="metric-title">Predios con Serie</div>
+                        <div class="metric-value">{total_con_serie:,}</div>
                     </div>
                 </div>
             """,
