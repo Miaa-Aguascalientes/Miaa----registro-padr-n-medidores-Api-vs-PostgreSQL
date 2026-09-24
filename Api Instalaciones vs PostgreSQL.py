@@ -22,10 +22,6 @@ st.markdown(
             display: flex;
             align-items: center;
         }
-        .metric-icon-box {
-            font-size: 24px;
-            margin-right: 15px;
-        }
         .metric-content {
             display: flex;
             flex-direction: column;
@@ -149,6 +145,17 @@ def cargar_datos_api():
               df = pd.DataFrame([data])
 
           if not df.empty:
+            # Estandarizar nombre de numeroCliente a Cliente de inmediato
+            for c_cli in [
+                "numeroCliente",
+                "numero_cliente",
+                "cliente",
+                "numCliente",
+            ]:
+              if c_cli in df.columns and "Cliente" not in df.columns:
+                df["Cliente"] = df[c_cli]
+                break
+
             cols_a_remover = [
                 c
                 for c in df.columns
@@ -203,18 +210,6 @@ def cargar_datos_api():
 
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-              if "predio" in df.columns:
-                cols = list(df.columns)
-                cols.remove("Predio_Viv")
-                idx_predio = cols.index("predio")
-                cols.insert(idx_predio, "Predio_Viv")
-                df = df[cols]
-              else:
-                cols = ["Predio_Viv"] + [
-                    col for col in df.columns if col != "Predio_Viv"
-                ]
-                df = df[cols]
-
           return df
     return pd.DataFrame()
   except Exception:
@@ -233,34 +228,19 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     )
     return df_conmedidor_pg
 
-  if "Predio_Viv" in df_api_merge.columns:
-    df_api_merge["key_predio"] = (
-        df_api_merge["Predio_Viv"].astype(str).str.strip()
-    )
-  else:
-    df_api_merge["key_predio"] = ""
-
-  col_api_cliente = next(
-      (
-          c
-          for c in [
-              "numeroCliente",
-              "numero_cliente",
-              "cliente",
-              "Cliente",
-              "numCliente",
-          ]
-          if c in df_api_merge.columns
-      ),
-      None,
+  # Preparar llaves de búsqueda limpias
+  df_api_merge["key_predio"] = (
+      df_api_merge["Predio_Viv"].astype(str).str.strip()
+      if "Predio_Viv" in df_api_merge.columns
+      else ""
   )
-  if col_api_cliente:
-    df_api_merge["key_cliente"] = (
-        df_api_merge[col_api_cliente].astype(str).str.strip()
-    )
-  else:
-    df_api_merge["key_cliente"] = ""
+  df_api_merge["key_cliente"] = (
+      df_api_merge["Cliente"].astype(str).str.strip()
+      if "Cliente" in df_api_merge.columns
+      else ""
+  )
 
+  # Diccionarios de mapeo rápido
   dict_api_serie_p = dict(
       zip(df_api_merge["key_predio"], df_api_merge.get("serie", ""))
   )
@@ -305,12 +285,14 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       zip(df_api_merge["key_cliente"], df_api_merge.get("fechaInstalacion", ""))
   )
 
+
   def mapear_tipo_externo(val):
     if val in [True, 1, "1", "true", "True", "YES", "yes", "S", "s"]:
       return "Externo"
     elif val in [False, 0, "0", "false", "False", "NO", "no", "N", "n"]:
       return "MIAA"
     return "MIAA"
+
 
   if "usuarioExterno" in df_api_merge.columns:
     df_api_merge["tipo_calculado"] = df_api_merge["usuarioExterno"].apply(
@@ -353,111 +335,123 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
       else ""
   )
 
-  matches_predio = 0
-  matches_cliente = 0
+  contador_predio = 0
+  contador_cliente = 0
 
   def aplicar_cruce_secuencial(row, dict_p, dict_c, default_val):
-    nonlocal matches_predio, matches_cliente
+    nonlocal contador_predio, contador_cliente
     kp = row["key_predio"]
     kc = row["key_cliente"]
 
-    if kp and kp.lower() not in ["none", "nan", "", "nat"]:
+    # 1. Intentar match por Predio_Viv
+    if kp and kp.lower() not in ["none", "nan", "", "nat", "0"]:
       if kp in dict_p:
         val = dict_p[kp]
         if pd.notna(val) and str(val).strip() not in ["", "None", "nan", "NaT"]:
-          matches_predio += 1
-          return val
+          return val, "predio"
 
-    if kc and kc.lower() not in ["none", "nan", "", "nat"]:
+    # 2. Intentar match por Cliente
+    if kc and kc.lower() not in ["none", "nan", "", "nat", "0"]:
       if kc in dict_c:
         val = dict_c[kc]
         if pd.notna(val) and str(val).strip() not in ["", "None", "nan", "NaT"]:
-          matches_cliente += 1
-          return val
+          return val, "cliente"
 
-    return default_val
+    return default_val, None
 
-  matches_predio = 0
-  matches_cliente = 0
-
-  df_conmedidor_pg["_Serie"] = df_conmedidor_pg.apply(
-      lambda r: aplicar_cruce_secuencial(
-          r, dict_api_serie_p, dict_api_serie_c, r.get("_Serie", "")
-      ),
-      axis=1,
-  )
-  df_conmedidor_pg["_Colonia"] = df_conmedidor_pg.apply(
-      lambda r: aplicar_cruce_secuencial(
-          r, dict_api_colonia_p, dict_api_colonia_c, r.get("_Colonia", "")
-      ),
-      axis=1,
-  )
-  df_conmedidor_pg["_Domicilio"] = df_conmedidor_pg.apply(
-      lambda r: aplicar_cruce_secuencial(
-          r, dict_api_domicilio_p, dict_api_domicilio_c, r.get("_Domicilio", "")
-      ),
-      axis=1,
-  )
-  df_conmedidor_pg["_Instalador"] = df_conmedidor_pg.apply(
-      lambda r: aplicar_cruce_secuencial(
-          r,
-          dict_api_instalador_p,
-          dict_api_instalador_c,
-          r.get("_Instalador", ""),
-      ),
-      axis=1,
-  )
-  df_conmedidor_pg["_Tipo_instalador"] = df_conmedidor_pg.apply(
-      lambda r: aplicar_cruce_secuencial(
-          r, dict_api_tipo_p, dict_api_tipo_c, r.get("_Tipo_instalador", "MIAA")
-      ),
-      axis=1,
+  # Aplicar columnas evaluando registro por registro de forma limpia
+  nuevas_series, nuevas_colonias, nuevos_domicilios, nuevos_instaladores, nuevos_tipos, nuevas_lecturas, nuevas_f_reg, nuevas_f_inst = (
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
   )
 
+  for _, r in df_conmedidor_pg.iterrows():
+    # Serie
+    val, match_tipo = aplicar_cruce_secuencial(
+        r, dict_api_serie_p, dict_api_serie_c, r.get("_Serie", "")
+    )
+    nuevas_series.append(val)
+    if match_tipo == "predio":
+      contador_predio += 1
+    elif match_tipo == "cliente":
+      contador_cliente += 1
+
+    # Colonia
+    val, _ = aplicar_cruce_secuencial(
+        r, dict_api_colonia_p, dict_api_colonia_c, r.get("_Colonia", "")
+    )
+    nuevas_colonias.append(val)
+
+    # Domicilio
+    val, _ = aplicar_cruce_secuencial(
+        r, dict_api_domicilio_p, dict_api_domicilio_c, r.get("_Domicilio", "")
+    )
+    nuevos_domicilios.append(val)
+
+    # Instalador
+    val, _ = aplicar_cruce_secuencial(
+        r, dict_api_instalador_p, dict_api_instalador_c, r.get("_Instalador", "")
+    )
+    nuevos_instaladores.append(val)
+
+    # Tipo instalador
+    val, _ = aplicar_cruce_secuencial(
+        r,
+        dict_api_tipo_p,
+        dict_api_tipo_c,
+        r.get("_Tipo_instalador", "MIAA"),
+    )
+    nuevos_tipos.append(val)
+
+    # Lectura actual
+    val, _ = aplicar_cruce_secuencial(
+        r, dict_api_lectura_p, dict_api_lectura_c, r.get("_Lectura_actual", 0)
+    )
+    nuevas_lecturas.append(val)
+
+    # Fecha registro
+    val, _ = aplicar_cruce_secuencial(
+        r,
+        dict_api_f_reg_p,
+        dict_api_f_reg_c,
+        r.get("_Fecha_registro", pd.NaT),
+    )
+    nuevas_f_reg.append(val)
+
+    # Fecha instalacion
+    val, _ = aplicar_cruce_secuencial(
+        r,
+        dict_api_f_inst_p,
+        dict_api_f_inst_c,
+        r.get("_Fecha_instalacion", pd.NaT),
+    )
+    nuevas_f_inst.append(val)
+
+  df_conmedidor_pg["_Serie"] = nuevas_series
+  df_conmedidor_pg["_Colonia"] = nuevas_colonias
+  df_conmedidor_pg["_Domicilio"] = nuevos_domicilios
+  df_conmedidor_pg["_Instalador"] = nuevos_instaladores
+  df_conmedidor_pg["_Tipo_instalador"] = nuevos_tipos
   df_conmedidor_pg["_Lectura_actual"] = pd.to_numeric(
-      df_conmedidor_pg.apply(
-          lambda r: aplicar_cruce_secuencial(
-              r,
-              dict_api_lectura_p,
-              dict_api_lectura_c,
-              r.get("_Lectura_actual", 0),
-          ),
-          axis=1,
-      ),
-      errors="coerce",
+      nuevas_lecturas, errors="coerce"
   ).fillna(0)
-
   df_conmedidor_pg["_Fecha_registro"] = pd.to_datetime(
-      df_conmedidor_pg.apply(
-          lambda r: aplicar_cruce_secuencial(
-              r,
-              dict_api_f_reg_p,
-              dict_api_f_reg_c,
-              r.get("_Fecha_registro", pd.NaT),
-          ),
-          axis=1,
-      ),
-      errors="coerce",
+      nuevas_f_reg, errors="coerce"
   )
   df_conmedidor_pg["_Fecha_instalacion"] = pd.to_datetime(
-      df_conmedidor_pg.apply(
-          lambda r: aplicar_cruce_secuencial(
-              r,
-              dict_api_f_inst_p,
-              dict_api_f_inst_c,
-              r.get("_Fecha_instalacion", pd.NaT),
-          ),
-          axis=1,
-      ),
-      errors="coerce",
+      nuevas_f_inst, errors="coerce"
   )
 
-  real_matches_p = matches_predio // 8
-  real_matches_c = matches_cliente // 8
-
   agregar_log(
-      f"📊 Cruce secuencial finalizado: {real_matches_p:,} registros actualizados"
-      f" por Predio-Viv y {real_matches_c:,} registros actualizados por Cliente."
+      f"📊 Cruce secuencial finalizado: {contador_predio:,} registros"
+      f" actualizados por Predio-Viv y {contador_cliente:,} registros"
+      " actualizados por Cliente."
   )
 
   df_conmedidor_pg = df_conmedidor_pg.drop(
@@ -467,7 +461,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
 
 
 def ejecutar_sincronizacion_automatica():
-  # Contenedor visual de progreso en tiempo real
   status_container = st.status(
       "🔄 Iniciando sincronización...", expanded=True
   )
@@ -808,22 +801,20 @@ with tab1:
     c_m1, c_m2, c_m3 = st.columns(3)
     with c_m1:
       st.markdown(
-          f"""
+          """
                 <div class="metric-card">
-                    <div class="icon-box" style="color: #38bdf8;"><i class="fa-solid fa-database"></i></div>
                     <div class="metric-content">
                         <div class="metric-title">Total Registros (PG)</div>
-                        <div class="metric-value">{total_registros_db:,}</div>
+                        <div class="metric-value">{:,}</div>
                     </div>
                 </div>
-            """,
+            """.format(total_registros_db),
           unsafe_allow_html=True,
       )
     with c_m2:
       st.markdown(
-          f"""
+          """
                 <div class="metric-card">
-                    <div class="icon-box" style="color: #4ade80;"><i class="fa-solid fa-circle-check"></i></div>
                     <div class="metric-content">
                         <div class="metric-title">Estado de Carga</div>
                         <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Optimizado (SQL Paginado)</div>
@@ -834,9 +825,8 @@ with tab1:
       )
     with c_m3:
       st.markdown(
-          f"""
+          """
                 <div class="metric-card">
-                    <div class="icon-box" style="color: #f59e0b;"><i class="fa-solid fa-bolt"></i></div>
                     <div class="metric-content">
                         <div class="metric-title">Rendimiento</div>
                         <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Alta Velocidad</div>
