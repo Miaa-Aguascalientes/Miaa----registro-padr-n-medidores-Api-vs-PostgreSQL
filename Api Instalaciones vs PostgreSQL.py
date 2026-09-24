@@ -561,6 +561,7 @@ with st.container(border=True):
     opciones_intervalo = {
         "Cada 1 minuto": 1,
         "Cada 5 minutos": 5,
+        "Cada 10 minutos": 10,
         "Cada 15 minutos": 15,
         "Cada 30 minutos": 30,
         "Cada hora": 60,
