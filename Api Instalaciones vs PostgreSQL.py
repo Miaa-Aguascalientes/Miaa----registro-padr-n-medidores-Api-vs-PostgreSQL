@@ -237,78 +237,31 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE SECUENCIAL PURO
+# 4. FUNCIÓN DE CRUCE ESTRICTO SEGÚN REGLA API -> POSTGRES
 # ==========================================
 def procesar_cruce_datos(
     df_conmedidor_pg, df_filtrado, registrar_auditoria=False
 ):
-  df_api_merge = df_filtrado.copy()
-
-  if df_api_merge.empty or df_conmedidor_pg.empty:
+  if df_filtrado.empty or df_conmedidor_pg.empty:
     return df_conmedidor_pg, 0, 0
 
-  df_api_merge["key_predio"] = (
-      df_api_merge["Predio_Viv"].astype(str).str.strip()
-      if "Predio_Viv" in df_api_merge.columns
+  df_api = df_filtrado.copy()
+
+  # Limpiar llaves en API
+  df_api["key_predio"] = (
+      df_api["Predio_Viv"].astype(str).str.strip()
+      if "Predio_Viv" in df_api.columns
       else ""
   )
-  df_api_merge["key_cliente"] = (
-      df_api_merge["Cliente"].astype(str).str.strip()
-      if "Cliente" in df_api_merge.columns
+  df_api["key_cliente"] = (
+      df_api["Cliente"].astype(str).str.strip()
+      if "Cliente" in df_api.columns
       else ""
   )
 
   invalidos = {"none", "nan", "", "nat", "0", "null", "None", "NaN"}
 
-  df_api_p = df_api_merge[~df_api_merge["key_predio"].str.lower().isin(invalidos)]
-  df_api_c = df_api_merge[
-      ~df_api_merge["key_cliente"].str.lower().isin(invalidos)
-  ]
-
-  dict_api_serie_p = dict(
-      zip(df_api_p["key_predio"], df_api_p.get("serie", ""))
-  )
-  dict_api_colonia_p = dict(
-      zip(df_api_p["key_predio"], df_api_p.get("colonia", ""))
-  )
-  dict_api_domicilio_p = dict(
-      zip(df_api_p["key_predio"], df_api_p.get("domicilio", ""))
-  )
-  dict_api_instalador_p = dict(
-      zip(df_api_p["key_predio"], df_api_p.get("usuarioNombre", ""))
-  )
-  dict_api_lectura_p = dict(
-      zip(df_api_p["key_predio"], df_api_p.get("lecturaActual", 0))
-  )
-  dict_api_f_reg_p = dict(
-      zip(df_api_p["key_predio"], df_api_p.get("fechaRegistro", ""))
-  )
-  dict_api_f_inst_p = dict(
-      zip(df_api_p["key_predio"], df_api_p.get("fechaInstalacion", ""))
-  )
-
-  dict_api_serie_c = dict(
-      zip(df_api_c["key_cliente"], df_api_c.get("serie", ""))
-  )
-  dict_api_colonia_c = dict(
-      zip(df_api_c["key_cliente"], df_api_c.get("colonia", ""))
-  )
-  dict_api_domicilio_c = dict(
-      zip(df_api_c["key_cliente"], df_api_c.get("domicilio", ""))
-  )
-  dict_api_instalador_c = dict(
-      zip(df_api_c["key_cliente"], df_api_c.get("usuarioNombre", ""))
-  )
-  dict_api_lectura_c = dict(
-      zip(df_api_c["key_cliente"], df_api_c.get("lecturaActual", 0))
-  )
-  dict_api_f_reg_c = dict(
-      zip(df_api_c["key_cliente"], df_api_c.get("fechaRegistro", ""))
-  )
-  dict_api_f_inst_c = dict(
-      zip(df_api_c["key_cliente"], df_api_c.get("fechaInstalacion", ""))
-  )
-
+  # Mapeo de usuario externo si existe
   def mapear_tipo_externo(val):
     if val in [True, 1, "1", "true", "True", "YES", "yes", "S", "s"]:
       return "Externo"
@@ -316,25 +269,116 @@ def procesar_cruce_datos(
       return "MIAA"
     return "MIAA"
 
-  if "usuarioExterno" in df_api_merge.columns:
-    df_api_merge["tipo_calculado"] = df_api_merge["usuarioExterno"].apply(
+  if "usuarioExterno" in df_api.columns:
+    df_api["tipo_calculado"] = df_api["usuarioExterno"].apply(
         mapear_tipo_externo
     )
-    df_api_p = df_api_merge[
-        ~df_api_merge["key_predio"].str.lower().isin(invalidos)
-    ]
-    df_api_c = df_api_merge[
-        ~df_api_merge["key_cliente"].str.lower().isin(invalidos)
-    ]
-    dict_api_tipo_p = dict(
-        zip(df_api_p["key_predio"], df_api_p["tipo_calculado"])
-    )
-    dict_api_tipo_c = dict(
-        zip(df_api_c["key_cliente"], df_api_c["tipo_calculado"])
-    )
   else:
-    dict_api_tipo_p, dict_api_tipo_c = {}, {}
+    df_api["tipo_calculado"] = "MIAA"
 
+  # Separar diccionarios por Predio_Viv (válidos) y por Cliente (cuando Predio_Viv no tiene registros)
+  df_api_con_predio = df_api[
+      ~df_api["key_predio"].str.lower().isin(invalidos)
+  ].copy()
+  df_api_sin_predio = df_api[
+      df_api["key_predio"].str.lower().isin(invalidos)
+      & ~df_api["key_cliente"].str.lower().isin(invalidos)
+  ].copy()
+
+  # Construir diccionarios para Predio_Viv
+  dict_serie_p = dict(
+      zip(df_api_con_predio["key_predio"], df_api_con_predio.get("serie", ""))
+  )
+  dict_colonia_p = dict(
+      zip(
+          df_api_con_predio["key_predio"], df_api_con_predio.get("colonia", "")
+      )
+  )
+  dict_domicilio_p = dict(
+      zip(
+          df_api_con_predio["key_predio"],
+          df_api_con_predio.get("domicilio", ""),
+      )
+  )
+  dict_instalador_p = dict(
+      zip(
+          df_api_con_predio["key_predio"],
+          df_api_con_predio.get("usuarioNombre", ""),
+      )
+  )
+  dict_lectura_p = dict(
+      zip(
+          df_api_con_predio["key_predio"],
+          df_api_con_predio.get("lecturaActual", 0),
+      )
+  )
+  dict_f_reg_p = dict(
+      zip(
+          df_api_con_predio["key_predio"],
+          df_api_con_predio.get("fechaRegistro", ""),
+      )
+  )
+  dict_f_inst_p = dict(
+      zip(
+          df_api_con_predio["key_predio"],
+          df_api_con_predio.get("fechaInstalacion", ""),
+      )
+  )
+  dict_tipo_p = dict(
+      zip(
+          df_api_con_predio["key_predio"],
+          df_api_con_predio.get("tipo_calculado", "MIAA"),
+      )
+  )
+
+  # Construir diccionarios para Cliente (solo para registros de API sin Predio_Viv)
+  dict_serie_c = dict(
+      zip(df_api_sin_predio["key_cliente"], df_api_sin_predio.get("serie", ""))
+  )
+  dict_colonia_c = dict(
+      zip(
+          df_api_sin_predio["key_cliente"],
+          df_api_sin_predio.get("colonia", ""),
+      )
+  )
+  dict_domicilio_c = dict(
+      zip(
+          df_api_sin_predio["key_cliente"],
+          df_api_sin_predio.get("domicilio", ""),
+      )
+  )
+  dict_instalador_c = dict(
+      zip(
+          df_api_sin_predio["key_cliente"],
+          df_api_sin_predio.get("usuarioNombre", ""),
+      )
+  )
+  dict_lectura_c = dict(
+      zip(
+          df_api_sin_predio["key_cliente"],
+          df_api_sin_predio.get("lecturaActual", 0),
+      )
+  )
+  dict_f_reg_c = dict(
+      zip(
+          df_api_sin_predio["key_cliente"],
+          df_api_sin_predio.get("fechaRegistro", ""),
+      )
+  )
+  dict_f_inst_c = dict(
+      zip(
+          df_api_sin_predio["key_cliente"],
+          df_api_sin_predio.get("fechaInstalacion", ""),
+      )
+  )
+  dict_tipo_c = dict(
+      zip(
+          df_api_sin_predio["key_cliente"],
+          df_api_sin_predio.get("tipo_calculado", "MIAA"),
+      )
+  )
+
+  # Preparar llaves en Postgres
   df_conmedidor_pg["key_predio"] = (
       df_conmedidor_pg["Predio_Viv"].astype(str).str.strip()
       if "Predio_Viv" in df_conmedidor_pg.columns
@@ -346,28 +390,8 @@ def procesar_cruce_datos(
       else ""
   )
 
-  api_predios_usados = set()
-  api_clientes_usados = set()
-
-  def aplicar_cruce_secuencial(row, dict_p, dict_c, default_val):
-    kp = str(row.get("key_predio", "")).strip()
-    kc = str(row.get("key_cliente", "")).strip()
-
-    if kp and kp.lower() not in invalidos:
-      if kp in dict_p:
-        val = dict_p[kp]
-        if pd.notna(val) and str(val).strip().lower() not in invalidos:
-          api_predios_usados.add(kp)
-          return val, "predio"
-
-    if kc and kc.lower() not in invalidos:
-      if kc in dict_c:
-        val = dict_c[kc]
-        if pd.notna(val) and str(val).strip().lower() not in invalidos:
-          api_clientes_usados.add(kc)
-          return val, "cliente"
-
-    return default_val, None
+  predios_usados_pg = set()
+  clientes_usados_pg = set()
 
   nuevas_series, nuevas_colonias, nuevos_domicilios, nuevos_instaladores, nuevos_tipos, nuevas_lecturas, nuevas_f_reg, nuevas_f_inst = (
       [],
@@ -384,74 +408,89 @@ def procesar_cruce_datos(
   contador_cliente = 0
 
   for _, r in df_conmedidor_pg.iterrows():
-    val, match_tipo = aplicar_cruce_secuencial(
-        r, dict_api_serie_p, dict_api_serie_c, r.get("_Serie", "")
-    )
-    nuevas_series.append(val)
-    if match_tipo == "predio":
-      contador_predio += 1
-    elif match_tipo == "cliente":
-      contador_cliente += 1
+    kp = str(r.get("key_predio", "")).strip()
+    kc = str(r.get("key_cliente", "")).strip()
 
-    val, _ = aplicar_cruce_secuencial(
-        r, dict_api_colonia_p, dict_api_colonia_c, r.get("_Colonia", "")
-    )
-    nuevas_colonias.append(val)
+    match_encontrado = False
+    match_tipo = None
 
-    val, _ = aplicar_cruce_secuencial(
-        r, dict_api_domicilio_p, dict_api_domicilio_c, r.get("_Domicilio", "")
-    )
-    nuevos_domicilios.append(val)
+    # Regla estricta: Si Predio_Viv de la API tiene registros, se actualiza por Predio_Viv y YA NO pasa al campo Cliente
+    if kp and kp.lower() not in invalidos and kp in dict_serie_p:
+      val_s = dict_serie_p[kp]
+      if pd.notna(val_s) and str(val_s).strip().lower() not in invalidos:
+        predios_usados_pg.add(kp)
+        match_encontrado = True
+        match_tipo = "predio"
+        contador_predio += 1
 
-    val, _ = aplicar_cruce_secuencial(
-        r,
-        dict_api_instalador_p,
-        dict_api_instalador_c,
-        r.get("_Instalador", ""),
-    )
-    nuevos_instaladores.append(val)
+        nuevas_series.append(val_s)
+        nuevas_colonias.append(dict_colonia_p.get(kp, r.get("_Colonia", "")))
+        nuevos_domicilios.append(
+            dict_domicilio_p.get(kp, r.get("_Domicilio", ""))
+        )
+        nuevos_instaladores.append(
+            dict_instalador_p.get(kp, r.get("_Instalador", ""))
+        )
+        nuevos_tipos.append(dict_tipo_p.get(kp, r.get("_Tipo_instalador", "")))
 
-    val, _ = aplicar_cruce_secuencial(
-        r,
-        dict_api_tipo_p,
-        dict_api_tipo_c,
-        r.get("_Tipo_instalador", "MIAA"),
-    )
-    nuevos_tipos.append(val)
+        lec = dict_lectura_p.get(kp, 0)
+        nuevas_lecturas.append(lec if not isinstance(lec, (list, dict)) else 0)
 
-    val, _ = aplicar_cruce_secuencial(
-        r, dict_api_lectura_p, dict_api_lectura_c, r.get("_Lectura_actual", 0)
-    )
-    if isinstance(val, (list, dict)):
-      val = 0
-    nuevas_lecturas.append(val)
+        nuevas_f_reg.append(dict_f_reg_p.get(kp, pd.NaT))
+        nuevas_f_inst.append(dict_f_inst_p.get(kp, pd.NaT))
 
-    val, _ = aplicar_cruce_secuencial(
-        r,
-        dict_api_f_reg_p,
-        dict_api_f_reg_c,
-        r.get("_Fecha_registro", pd.NaT),
-    )
-    nuevas_f_reg.append(val)
+    if not match_encontrado:
+      # Si el Predio_Viv no hizo match o no tiene registros en API, evaluamos por Cliente
+      if kc and kc.lower() not in invalidos and kc in dict_serie_c:
+        val_s = dict_serie_c[kc]
+        if pd.notna(val_s) and str(val_s).strip().lower() not in invalidos:
+          clientes_usados_pg.add(kc)
+          match_encontrado = True
+          match_tipo = "cliente"
+          contador_cliente += 1
 
-    val, _ = aplicar_cruce_secuencial(
-        r,
-        dict_api_f_inst_p,
-        dict_api_f_inst_c,
-        r.get("_Fecha_instalacion", pd.NaT),
-    )
-    nuevas_f_inst.append(val)
+          nuevas_series.append(val_s)
+          nuevas_colonias.append(dict_colonia_c.get(kc, r.get("_Colonia", "")))
+          nuevos_domicilios.append(
+              dict_domicilio_c.get(kc, r.get("_Domicilio", ""))
+          )
+          nuevos_instaladores.append(
+              dict_instalador_c.get(kc, r.get("_Instalador", ""))
+          )
+          nuevos_tipos.append(
+              dict_tipo_c.get(kc, r.get("_Tipo_instalador", ""))
+          )
 
+          lec = dict_lectura_c.get(kc, 0)
+          nuevas_lecturas.append(
+              lec if not isinstance(lec, (list, dict)) else 0
+          )
+
+          nuevas_f_reg.append(dict_f_reg_c.get(kc, pd.NaT))
+          nuevas_f_inst.append(dict_f_inst_c.get(kc, pd.NaT))
+
+    if not match_encontrado:
+      # Si no hubo coincidencia en ninguno, conservamos los valores originales de PG
+      nuevas_series.append(r.get("_Serie", ""))
+      nuevas_colonias.append(r.get("_Colonia", ""))
+      nuevos_domicilios.append(r.get("_Domicilio", ""))
+      nuevos_instaladores.append(r.get("_Instalador", ""))
+      nuevos_tipos.append(r.get("_Tipo_instalador", "MIAA"))
+      nuevas_lecturas.append(r.get("_Lectura_actual", 0))
+      nuevas_f_reg.append(r.get("_Fecha_registro", pd.NaT))
+      nuevas_f_inst.append(r.get("_Fecha_instalacion", pd.NaT))
+
+  # Auditoría para detectar registros de la API que no hicieron match ni por Predio_Viv ni por Cliente
   if registrar_auditoria:
     registros_no_encontrados = 0
-    for _, api_row in df_api_merge.iterrows():
+    for _, api_row in df_api.iterrows():
       kp_val = str(api_row.get("key_predio", "")).strip()
       kc_val = str(api_row.get("key_cliente", "")).strip()
 
       encontrado = False
-      if kp_val and kp_val in api_predios_usados:
+      if kp_val and kp_val in predios_usados_pg:
         encontrado = True
-      elif kc_val and kc_val in api_clientes_usados:
+      elif kc_val and kc_val in clientes_usados_pg:
         encontrado = True
 
       if not encontrado and (
@@ -494,7 +533,7 @@ def procesar_cruce_datos(
 
   df_conmedidor_pg["_Lectura_actual"] = lecturas_limpias
 
-  # --- CONVERSIÓN DE FECHAS SEGURA Y DIRECTA (BLINDADA CONTRA CONFLICTOS) ---
+  # --- CONVERSIÓN DE FECHAS SEGURA Y DIRECTA ---
   def convertir_a_zona_mexico_segura(serie_entrada):
     s_dt = pd.to_datetime(serie_entrada, errors="coerce")
     resultados = []
@@ -584,7 +623,7 @@ def ejecutar_sincronizacion_automatica():
 
     status_container.update(
         label=(
-            "⚙️ [3/4] Procesando cruce secuencial y auditoría para"
+            "⚙️ [3/4] Procesando cruce estricto y auditoría para"
             f" {total_registros:,} registros..."
         ),
         state="running",
@@ -600,8 +639,8 @@ def ejecutar_sincronizacion_automatica():
     )
 
     agregar_log(
-        f"📊 Cruce secuencial finalizado: {c_p:,} registros actualizados por"
-        f" Predio_Viv y {c_c:,} registros actualizados por Cliente."
+        f"📊 Cruce finalizado: {c_p:,} registros actualizados por Predio_Viv"
+        f" y {c_c:,} registros actualizados por Cliente."
     )
 
     status_container.update(
