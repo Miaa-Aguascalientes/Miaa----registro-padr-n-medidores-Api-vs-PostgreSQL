@@ -46,7 +46,7 @@ st.markdown(
             font-family: 'Courier New', Courier, monospace;
             padding: 15px;
             border-radius: 6px;
-            height: 220px;
+            height: 200px;
             overflow-y: scroll;
             font-size: 13px;
             line-height: 1.4;
@@ -57,30 +57,23 @@ st.markdown(
 )
 
 # ==========================================
-# 2. GESTIÓN DE ESTADOS Y LOGS
+# 2. GESTIÓN DE LOGS (CONSOLA)
 # ==========================================
 if "logs" not in st.session_state:
   st.session_state.logs = [
-      f"[{datetime.now().strftime('%H:%M:%S')}] Sistema inicializado correctamente. Listo para operar."
+      f"[{datetime.now().strftime('%H:%M:%S')}] Sistema inicializado correctamente. Esperando ciclo de ejecución..."
   ]
-
-if "is_running" not in st.session_state:
-  st.session_state.is_running = False
-if "next_run_time" not in st.session_state:
-  st.session_state.next_run_time = None
-if "total_seconds_interval" not in st.session_state:
-  st.session_state.total_seconds_interval = 300
 
 
 def agregar_log(mensaje):
   timestamp = datetime.now().strftime("%H:%M:%S")
   st.session_state.logs.insert(0, f"[{timestamp}] {mensaje}")
-  if len(st.session_state.logs) > 150:
+  if len(st.session_state.logs) > 100:
     st.session_state.logs.pop()
 
 
 # ==========================================
-# 3. CONEXIONES Y CONSULTAS (SQL Y API)
+# 3. CONEXIONES Y CONSULTAS OPTIMIZADAS (SQL)
 # ==========================================
 url_login = "https://prelec.miaa.mx/auth/v2/login"
 url_instalaciones = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones"
@@ -105,22 +98,6 @@ def obtener_total_registros():
     return 0
 
 
-@st.cache_data(ttl=600)
-def obtener_total_con_serie():
-  try:
-    engine_pg = obtener_motor_postgres()
-    with engine_pg.connect() as conn:
-      result = conn.execute(
-          text(
-              'SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor" WHERE'
-              ' "_Serie" IS NOT NULL AND TRIM(CAST("_Serie" AS TEXT)) != \'\''
-          )
-      )
-      return result.scalar()
-  except Exception:
-    return 0
-
-
 @st.cache_data(ttl=60)
 def cargar_pagina_usuarios_db(limit=50, offset=0):
   try:
@@ -132,7 +109,7 @@ def cargar_pagina_usuarios_db(limit=50, offset=0):
     return pd.read_sql(
         query, con=engine_pg, params={"lim": limit, "off": offset}
     )
-  except Exception:
+  except Exception as e:
     return pd.DataFrame()
 
 
@@ -172,6 +149,7 @@ def cargar_datos_api():
               df = pd.DataFrame([data])
 
           if not df.empty:
+            # Eliminar columnas de fotos/imágenes
             cols_a_remover = [
                 c
                 for c in df.columns
@@ -182,6 +160,7 @@ def cargar_datos_api():
             ]
             df = df.drop(columns=cols_a_remover, errors="ignore")
 
+            # CREACIÓN OFICIAL DEL CAMPO Predio_Viv INCLUYENDO UNIDADES EN 0
             col_api_predio = next(
                 (
                     c
@@ -215,14 +194,18 @@ def cargar_datos_api():
                 if not p or p.lower() in ["none", "nan"]:
                   return ""
 
+                # Si existe unidad (incluso si es 0, "0", o numérica), la concatenamos con guion medio
                 if col_api_unidad and pd.notna(row[col_api_unidad]):
                   u = str(row[col_api_unidad]).strip()
                   if u.lower() not in ["none", "nan"]:
                     return f"{p}-{u}"
 
+                # Por defecto si no hay unidad válida
                 return f"{p}-0"
 
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
+
+              # Mover la columna Predio_Viv a la primera posición (extremo izquierdo)
               cols = ["Predio_Viv"] + [
                   col for col in df.columns if col != "Predio_Viv"
               ]
@@ -230,12 +213,12 @@ def cargar_datos_api():
 
           return df
     return pd.DataFrame()
-  except Exception:
+  except Exception as e:
     return pd.DataFrame()
 
 
 # ==========================================
-# 4. CRUCE Y ACTUALIZACIÓN EN POSTGRESQL
+# 4. FUNCIÓN DE CRUCE ESTRICTO POR Predio_Viv
 # ==========================================
 def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   df_api_merge = df_filtrado.copy()
@@ -340,8 +323,10 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
   return df_conmedidor_pg
 
 
-def ejecutar_sincronizacion():
-  agregar_log("🔄 Iniciando ciclo: Conectando con la API de MIAA...")
+def ejecutar_sincronizacion_automatica():
+  agregar_log(
+      "🔄 Iniciando ciclo: Intentando conectar y autenticar con la API de MIAA..."
+  )
   df_filtrado = cargar_datos_api()
 
   if df_filtrado.empty:
@@ -352,10 +337,12 @@ def ejecutar_sincronizacion():
     return False
 
   agregar_log(
-      f"✅ Datos obtenidos de la API con éxito ({len(df_filtrado):,} registros)."
+      "✅ Conexión a la API establecida de manera correcta. Registros"
+      f" obtenidos de la API: {len(df_filtrado):,}."
   )
   agregar_log(
-      "🔄 Actualizando registros en PostgreSQL mediante cruce de datos..."
+      "🔄 Se procede a la actualización de datos de PostgreSQL (cruce y"
+      " almacenamiento)..."
   )
 
   try:
@@ -364,11 +351,15 @@ def ejecutar_sincronizacion():
         'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"', con=engine_pg
     )
   except Exception as ex:
-    agregar_log(f"❌ Error al conectar a PostgreSQL: {ex}")
+    agregar_log(f"❌ Error al conectar a la base de datos PostgreSQL: {ex}")
     return False
 
   if not df_conmedidor_pg.empty:
     total_predios = len(df_conmedidor_pg)
+    agregar_log(
+        f"Procesando cruce estricto de información para {total_predios:,}"
+        " predios en PostgreSQL..."
+    )
     df_actualizado = procesar_cruce_datos(df_conmedidor_pg, df_filtrado)
     try:
       df_actualizado.to_sql(
@@ -379,12 +370,12 @@ def ejecutar_sincronizacion():
           index=False,
       )
       agregar_log(
-          f"✅ ¡Actualización completada! Se actualizaron {total_predios:,}"
-          " registros en PostgreSQL."
+          f"✅ ¡Actualización completada con éxito! Se han actualizado"
+          f" {total_predios:,} datos/registros en la tabla de PostgreSQL."
       )
       return True
     except Exception as ex:
-      agregar_log(f"❌ Error al guardar en PostgreSQL: {ex}")
+      agregar_log(f"❌ Error al guardar los datos actualizados en PG: {ex}")
       return False
   else:
     agregar_log("⚠️ Advertencia: La tabla en PostgreSQL está vacía.")
@@ -392,73 +383,79 @@ def ejecutar_sincronizacion():
 
 
 # ==========================================
-# 5. BARRA LATERAL (SIDEBAR)
+# 5. GESTIÓN DE ESTADO PARA EL TEMPORIZADOR
 # ==========================================
-with st.sidebar:
-  st.markdown("<h2>⚙️ Configuración</h2>", unsafe_allow_html=True)
-  st.markdown("---")
-
-  st.markdown("#### Ejecución Manual")
-  if st.button("🚀 Ejecutar Ahora", type="primary", use_container_width=True):
-    ejecutar_sincronizacion()
-    st.rerun()
-
-  st.markdown("---")
-  st.markdown("#### Ejecución Periódica")
-
-  opciones_intervalo = {
-      "Cada 1 minuto": 60,
-      "Cada 5 minutos": 300,
-      "Cada 15 minutos": 900,
-      "Cada 30 minutos": 1800,
-      "Cada hora": 3600,
-  }
-  intervalo_sel = st.selectbox(
-      "Seleccionar Intervalo", list(opciones_intervalo.keys())
-  )
-  total_segundos = opciones_intervalo[intervalo_sel]
-
-  col_sb1, col_sb2 = st.columns(2)
-  with col_sb1:
-    btn_iniciar = st.button("INICIAR", type="primary", use_container_width=True)
-  with col_sb2:
-    btn_parar = st.button("PARAR", type="secondary", use_container_width=True)
-
-  if btn_iniciar:
-    st.session_state.is_running = True
-    st.session_state.total_seconds_interval = total_segundos
-    st.session_state.next_run_time = datetime.now() + timedelta(
-        seconds=total_segundos
-    )
-    agregar_log(f"⏱️ Temporizador activado ({intervalo_sel.lower()}).")
-    st.success("¡Temporizador activo!")
-    st.rerun()
-
-  if btn_parar:
-    st.session_state.is_running = False
-    st.session_state.next_run_time = None
-    agregar_log("🛑 Temporizador detenido.")
-    st.warning("Temporizador detenido.")
-    st.rerun()
+if "is_running" not in st.session_state:
+  st.session_state.is_running = False
+if "next_run_time" not in st.session_state:
+  st.session_state.next_run_time = None
+if "total_seconds_interval" not in st.session_state:
+  st.session_state.total_seconds_interval = 300
 
 # ==========================================
-# 6. TÍTULO PRINCIPAL
+# 6. TÍTULO Y PANEL DE CONFIGURACIÓN DE TIEMPO
 # ==========================================
 st.markdown(
     "<h2>MIAA - Sistema de Registros e Instalaciones</h2>", unsafe_allow_html=True
 )
 st.markdown("---")
 
+st.markdown("#### Configuración")
+
+with st.container(border=True):
+  c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+  with c1:
+    modo = st.selectbox(
+        "Modo", ["Periódico"], label_visibility="collapsed"
+    )
+  with c2:
+    opciones_intervalo = {
+        "Cada 1 minuto": 60,
+        "Cada 5 minutos": 300,
+        "Cada 15 minutos": 900,
+        "Cada 30 minutos": 1800,
+        "Cada hora": 3600,
+    }
+    intervalo_sel = st.selectbox(
+        "Intervalo", list(opciones_intervalo.keys()), label_visibility="collapsed"
+    )
+    total_segundos = opciones_intervalo[intervalo_sel]
+  with c3:
+    btn_iniciar = st.button("INICIAR", type="primary", use_container_width=True)
+  with c4:
+    btn_parar = st.button("PARAR", type="secondary", use_container_width=True)
+
+if btn_iniciar:
+  st.session_state.is_running = True
+  st.session_state.total_seconds_interval = total_segundos
+  st.session_state.next_run_time = datetime.now() + timedelta(
+      seconds=total_segundos
+  )
+  agregar_log(
+      f"Temporizador iniciado. Próxima ejecución en {intervalo_sel.lower()}."
+  )
+  st.success("¡Temporizador iniciado correctamente!")
+  st.rerun()
+
+if btn_parar:
+  st.session_state.is_running = False
+  st.session_state.next_run_time = None
+  agregar_log("Temporizador detenido manualmente por el usuario.")
+  st.warning("Temporizador detenido.")
+  st.rerun()
+
+st.markdown("---")
+
 
 # ==========================================
-# 7. FRAGMENTO REACTIVO EN VIVO (SEGUNDERO Y CONSOLA)
+# 7. FRAGMENTO AISLADO CON BARRA DE PROGRESO, CONTADOR Y CONSOLA
 # ==========================================
 @st.fragment(run_every=1)
-def renderizar_segundero_y_consola():
+def renderizar_progreso_y_consola():
   if st.session_state.is_running and st.session_state.next_run_time:
     ahora = datetime.now()
     if ahora >= st.session_state.next_run_time:
-      ejecutar_sincronizacion()
+      ejecutar_sincronizacion_automatica()
       st.session_state.next_run_time = datetime.now() + timedelta(
           seconds=st.session_state.total_seconds_interval
       )
@@ -498,66 +495,19 @@ def renderizar_segundero_y_consola():
   )
 
 
-renderizar_segundero_y_consola()
+renderizar_progreso_y_consola()
 
 st.markdown("---")
 
 # ==========================================
-# 8. INDICADORES Y PESTAÑAS (DISEÑO ORIGINAL)
+# 8. ESTRUCTURA DE PESTAÑAS CON PAGINACIÓN SQL EFICIENTE
 # ==========================================
-total_registros_db = obtener_total_registros()
-total_con_serie = obtener_total_con_serie()
-df_filtrado = cargar_datos_api()
-total_registros_api = len(df_filtrado) if not df_filtrado.empty else 0
-
-if total_registros_db > 0:
-  c_m1, c_m2, c_m3 = st.columns(3)
-  with c_m1:
-    st.markdown(
-        f"""
-            <div class="metric-card">
-                <div class="metric-icon-box" style="color: #38bdf8;"><i class="fa-solid fa-database"></i></div>
-                <div class="metric-content">
-                    <div class="metric-title">Total Registros (PG)</div>
-                    <div class="metric-value">{total_registros_db:,}</div>
-                </div>
-            </div>
-        """,
-        unsafe_allow_html=True,
-    )
-  with c_m2:
-    st.markdown(
-        f"""
-            <div class="metric-card">
-                <div class="metric-icon-box" style="color: #4ade80;"><i class="fa-solid fa-barcode"></i></div>
-                <div class="metric-content">
-                    <div class="metric-title">Predios con Serie</div>
-                    <div class="metric-value">{total_con_serie:,}</div>
-                </div>
-            </div>
-        """,
-        unsafe_allow_html=True,
-    )
-  with c_m3:
-    st.markdown(
-        f"""
-            <div class="metric-card">
-                <div class="metric-icon-box" style="color: #f59e0b;"><i class="fa-solid fa-cloud-arrow-down"></i></div>
-                <div class="metric-content">
-                    <div class="metric-title">Registros en la API</div>
-                    <div class="metric-value">{total_registros_api:,}</div>
-                </div>
-            </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-  st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
-
 tab1, tab2 = st.tabs([
     "🚰 Panel Principal y Gestión",
     "📋 Tablas de Datos (PostgreSQL y API)",
 ])
+
+total_registros_db = obtener_total_registros()
 
 with tab1:
   st.markdown(
@@ -566,10 +516,61 @@ with tab1:
       unsafe_allow_html=True,
   )
   if total_registros_db > 0:
+    c_m1, c_m2, c_m3 = st.columns(3)
+    with c_m1:
+      st.markdown(
+          f"""
+                <div class="metric-card">
+                    <div class="metric-icon-box" style="color: #38bdf8;"><i class="fa-solid fa-database"></i></div>
+                    <div class="metric-content">
+                        <div class="metric-title">Total Registros (PG)</div>
+                        <div class="metric-value">{total_registros_db:,}</div>
+                    </div>
+                </div>
+            """,
+          unsafe_allow_html=True,
+      )
+    with c_m2:
+      st.markdown(
+          f"""
+                <div class="metric-card">
+                    <div class="metric-icon-box" style="color: #4ade80;"><i class="fa-solid fa-circle-check"></i></div>
+                    <div class="metric-content">
+                        <div class="metric-title">Estado de Carga</div>
+                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Optimizado (SQL Paginado)</div>
+                    </div>
+                </div>
+            """,
+          unsafe_allow_html=True,
+      )
+    with c_m3:
+      st.markdown(
+          f"""
+                <div class="metric-card">
+                    <div class="metric-icon-box" style="color: #f59e0b;"><i class="fa-solid fa-bolt"></i></div>
+                    <div class="metric-content">
+                        <div class="metric-title">Rendimiento</div>
+                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Alta Velocidad</div>
+                    </div>
+                </div>
+            """,
+          unsafe_allow_html=True,
+      )
+
+    st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
+
+    # ==========================================
+    # LIMPIEZA MASIVA DE CAMPOS (SIN BORRAR FILAS)
+    # ==========================================
     with st.container(border=True):
       st.markdown(
           "#### 🧹 Limpieza Masiva de Campos (Sin eliminar registros)"
       )
+      st.markdown(
+          "Selecciona las columnas cuyos datos deseas **vaciar por completo"
+          " en toda la tabla** a la vez. Las filas se mantendrán intactas."
+      )
+
       campos_disponibles = [
           "_Serie",
           "_Colonia",
@@ -620,9 +621,13 @@ with tab1:
               conn_up.commit()
 
             agregar_log(
-                f"Limpieza masiva ejecutada en campos: {campos_a_limpiar_masivo}"
+                f"Limpieza masiva ejecutada. Campos vaciados en toda la tabla:"
+                f" {campos_a_limpiar_masivo}"
             )
-            st.success("¡Los campos seleccionados han sido vaciados con éxito!")
+            st.success(
+                "¡Los campos seleccionados han sido vaciados en todos los"
+                " registros exitosamente!"
+            )
             st.rerun()
           except Exception as e:
             st.error(f"Error al ejecutar la limpieza masiva: {e}")
@@ -656,7 +661,8 @@ with tab1:
       with col_p2:
         st.markdown(
             f"<p style='margin-top: 25px; color: #94a3b8;'>Página"
-            f" {pagina_actual} de {total_paginas} (Bloques de 50 registros)</p>",
+            f" {pagina_actual} de {total_paginas} (Mostrando bloques de 50"
+            " registros)</p>",
             unsafe_allow_html=True,
         )
 
@@ -664,6 +670,8 @@ with tab1:
       df_pagina_pg = cargar_pagina_usuarios_db(
           limit=filas_por_pagina, offset=offset_val
       )
+
+      df_filtrado = cargar_datos_api()
       if not df_pagina_pg.empty and not df_filtrado.empty:
         df_pagina_pg = procesar_cruce_datos(df_pagina_pg, df_filtrado)
 
@@ -697,10 +705,8 @@ with tab2:
 
   st.markdown("---")
 
-  st.subheader(
-      "🌐 Tabla: Datos de la API de Instalación (Todos los registros)"
-  )
+  st.subheader("🌐 Tabla: Datos de la API de Instalación")
   if not df_filtrado.empty:
-    st.dataframe(df_filtrado, use_container_width=True, height=350)
+    st.dataframe(df_filtrado.head(100), use_container_width=True, height=350)
   else:
     st.warning("No hay datos cargados desde la API.")
