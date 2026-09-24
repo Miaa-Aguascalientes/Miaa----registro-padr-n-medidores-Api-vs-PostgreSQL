@@ -145,16 +145,13 @@ def cargar_datos_api():
               df = pd.DataFrame([data])
 
           if not df.empty:
-            # Estandarizar nombre de numeroCliente a Cliente de inmediato
-            for c_cli in [
-                "numeroCliente",
-                "numero_cliente",
-                "cliente",
-                "numCliente",
-            ]:
-              if c_cli in df.columns and "Cliente" not in df.columns:
-                df["Cliente"] = df[c_cli]
-                break
+            # Renombrar explícitamente numeroCliente de la API a Cliente
+            if "numeroCliente" in df.columns:
+              df["Cliente"] = df["numeroCliente"]
+            elif "numero_cliente" in df.columns:
+              df["Cliente"] = df["numero_cliente"]
+            elif "numCliente" in df.columns:
+              df["Cliente"] = df["numCliente"]
 
             cols_a_remover = [
                 c
@@ -359,7 +356,6 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
 
     return default_val, None
 
-  # Aplicar columnas evaluando registro por registro de forma limpia
   nuevas_series, nuevas_colonias, nuevos_domicilios, nuevos_instaladores, nuevos_tipos, nuevas_lecturas, nuevas_f_reg, nuevas_f_inst = (
       [],
       [],
@@ -409,7 +405,7 @@ def procesar_cruce_datos(df_conmedidor_pg, df_filtrado):
     )
     nuevos_tipos.append(val)
 
-    # Lectura actual (blindado contra tipos complejos)
+    # Lectura actual
     val, _ = aplicar_cruce_secuencial(
         r, dict_api_lectura_p, dict_api_lectura_c, r.get("_Lectura_actual", 0)
     )
