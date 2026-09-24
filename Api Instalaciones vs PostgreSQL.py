@@ -92,7 +92,6 @@ def obtener_motor_postgres():
   return create_engine(connection_string)
 
 
-@st.cache_data(ttl=600)
 def obtener_total_registros():
   try:
     engine_pg = obtener_motor_postgres()
@@ -105,7 +104,6 @@ def obtener_total_registros():
     return 0
 
 
-@st.cache_data(ttl=600)
 def obtener_total_con_serie():
   try:
     engine_pg = obtener_motor_postgres()
@@ -121,7 +119,6 @@ def obtener_total_con_serie():
     return 0
 
 
-@st.cache_data(ttl=60)
 def cargar_pagina_usuarios_db(limit=50, offset=0):
   try:
     engine_pg = obtener_motor_postgres()
@@ -495,7 +492,7 @@ if st.session_state.is_running and st.session_state.next_run_time:
     )
 
 # ==========================================
-# 8. CONSOLA DE REGISTROS EN TIEMPO REAL (CONTENEDOR DINÁMICO)
+# 8. CONSOLA DE REGISTROS EN TIEMPO REAL (ESTÁTICA Y LIMPIA)
 # ==========================================
 if st.session_state.is_running and st.session_state.next_run_time:
   ahora = datetime.now()
@@ -522,9 +519,8 @@ else:
   st.progress(0.0)
 
 st.markdown("#### 🖥️ Consola de Registros en Tiempo Real")
-terminal_placeholder = st.empty()
 logs_html = "<br>".join(st.session_state.logs)
-terminal_placeholder.markdown(
+st.markdown(
     f'<div class="terminal-box">{logs_html}</div>', unsafe_allow_html=True
 )
 
