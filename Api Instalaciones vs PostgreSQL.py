@@ -153,6 +153,23 @@ def obtener_total_registros():
 
 
 @st.cache_data(ttl=60)
+def obtener_total_etapa_1():
+  try:
+    engine_pg = obtener_motor_postgres()
+    with engine_pg.connect() as conn:
+      result = conn.execute(
+          text(
+              'SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor"'
+              " WHERE etapa = 1"
+          )
+      )
+      return result.scalar() or 0
+  except Exception as e:
+    agregar_log(f"⚠️ [AVISO DB] No se pudo obtener el conteo de etapa 1: {e}")
+    return 0
+
+
+@st.cache_data(ttl=60)
 def cargar_pagina_usuarios_db(limit=50, offset=0):
   try:
     engine_pg = obtener_motor_postgres()
@@ -319,7 +336,7 @@ def procesar_cruce_datos(
 ):
   if df_filtrado.empty or df_conmedidor_pg.empty:
     agregar_log(
-        "⚠️ [CRUCE] Uno de los DataFrames está vacío. No se puede realizar el"
+        "⚠️️ [CRUCE] Uno de los DataFrames está vacío. No se puede realizar el"
         " cruce."
     )
     return df_conmedidor_pg, 0, 0
@@ -715,6 +732,7 @@ if "intervalo_minutos_sel" not in st.session_state:
 # 6. CARGA DE DATOS PARA INDICADORES Y VISTAS
 # ==========================================
 total_registros_db = obtener_total_registros()
+total_etapa_1_db = obtener_total_etapa_1()
 df_filtrado = cargar_datos_api()
 
 total_serie_api = 0
@@ -806,7 +824,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-col_ind1, col_ind2, col_ind3 = st.columns(3)
+col_ind1, col_ind2, col_ind3, col_ind4 = st.columns(4)
 
 with col_ind1:
   st.markdown(
@@ -837,6 +855,20 @@ with col_ind2:
   )
 
 with col_ind3:
+  st.markdown(
+      f"""
+        <div class="metric-card">
+            <div style="font-size: 28px; margin-right: 15px;">🔢</div>
+            <div class="metric-content">
+                <div class="metric-title">MEDIDORES ETAPA 1</div>
+                <div class="metric-value">{total_etapa_1_db:,}</div>
+            </div>
+        </div>
+    """,
+      unsafe_allow_html=True,
+  )
+
+with col_ind4:
   porcentaje_cobertura = (
       min(100.0, (total_serie_pg_lleno / total_serie_api) * 100)
       if total_serie_api > 0
@@ -969,7 +1001,7 @@ with col_limpieza:
           campos_a_limpiar_masivo.append(campo)
 
     confirmar_masivo = st.checkbox(
-        "⚠️️ Confirmo que quiero vaciar masivamente estos campos en TODA la tabla",
+        "⚠ Confirmo que quiero vaciar masivamente estos campos en TODA la tabla",
         key="chk_confirmar_masivo",
     )
 
@@ -1106,7 +1138,7 @@ with tab2:
     st.warning("No hay datos cargados desde la API.")
 
 with tab3:
-  st.subheader("🛠️ Gestión de la tabla: medidores_inteligentes")
+  st.subheader("🛠️️ Gestión de la tabla: medidores_inteligentes")
   st.markdown(
       "Desde aquí puedes gestionar y actualizar de forma masiva los campos"
       " requeridos de la tabla `medidores_inteligentes` dentro del esquema"
@@ -1200,7 +1232,6 @@ with tab3:
       else:
         try:
           engine_pg = obtener_motor_postgres()
-          # Consulta SQL avanzada utilizando UPDATE con FROM (JOIN implícito) en PostgreSQL
           query_update_join = text("""
                         UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
                         SET etapa = m.etapa
