@@ -157,15 +157,16 @@ def obtener_total_etapa_1():
   try:
     engine_pg = obtener_motor_postgres()
     with engine_pg.connect() as conn:
+      # Corregido: '1' como cadena de texto al ser 'etapa' de tipo varchar
       result = conn.execute(
           text(
               'SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor"'
-              " WHERE etapa = 1"
+              " WHERE etapa = '1'"
           )
       )
       return result.scalar() or 0
   except Exception as e:
-    agregar_log(f"⚠️ [AVISO DB] No se pudo obtener el conteo de etapa 1: {e}")
+    agregar_log(f"⚠️️ [AVISO DB] No se pudo obtener el conteo de etapa 1: {e}")
     return 0
 
 
@@ -329,14 +330,14 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE ESTRICTO Y EJECUCIÓN CON PROGRESO VIVO EN CONSOLA
+# 4. FUNCIÓN DE CRUCE ESTRICTO Y EJECUCIÓN
 # ==========================================
 def procesar_cruce_datos(
     df_conmedidor_pg, df_filtrado, registrar_auditoria=False
 ):
   if df_filtrado.empty or df_conmedidor_pg.empty:
     agregar_log(
-        "⚠️️ [CRUCE] Uno de los DataFrames está vacío. No se puede realizar el"
+        "⚠ [CRUCE] Uno de los DataFrames está vacío. No se puede realizar el"
         " cruce."
     )
     return df_conmedidor_pg, 0, 0
@@ -813,7 +814,7 @@ with st.sidebar:
     st.rerun()
 
 # ==========================================
-# 8. INTERFAZ PRINCIPAL Y BARRAS DE PROGRESO (ESPERA Y EJECUCIÓN)
+# 8. INTERFAZ PRINCIPAL Y BARRAS DE PROGRESO
 # ==========================================
 st.markdown(
     """
@@ -1138,7 +1139,7 @@ with tab2:
     st.warning("No hay datos cargados desde la API.")
 
 with tab3:
-  st.subheader("🛠️️ Gestión de la tabla: medidores_inteligentes")
+  st.subheader("🛠 Gestión de la tabla: medidores_inteligentes")
   st.markdown(
       "Desde aquí puedes gestionar y actualizar de forma masiva los campos"
       " requeridos de la tabla `medidores_inteligentes` dentro del esquema"
@@ -1198,7 +1199,7 @@ with tab3:
   )
 
   # ==========================================
-  # NUEVA SECCIÓN: JOIN Y CRUCE DE ETAPA POR PREDIO
+  # SECCIÓN: JOIN Y CRUCE DE ETAPA POR PREDIO
   # ==========================================
   with st.container(border=True):
     st.markdown(
@@ -1261,6 +1262,76 @@ with tab3:
           st.rerun()
         except Exception as e:
           st.error(f"Error al ejecutar la actualización por JOIN: {e}")
+
+  st.markdown(
+      "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
+  )
+
+  # ==========================================
+  # NUEVA SECCIÓN DE DIAGNÓSTICO: PREDIOS NO INSERTADOS / NO CRUZADOS
+  # ==========================================
+  with st.container(border=True):
+    st.markdown(
+        "#### 🔍 Diagnóstico de Predios No Insertados / No Cruzados"
+    )
+    st.markdown(
+        "Identifica qué registros de `medidores_inteligentes` **no encontraron coincidencia** en `usuarios_miaa_conmedidor` y descubre la razón exacta por la que no se insertaron (por ejemplo: predio nulo, vacío, espacios en blanco o inexistente en la tabla destino)."
+    )
+
+    if st.button(
+        "Analizar Predios No Cruzados (Auditoría)",
+        key="btn_auditar_predios",
+        use_container_width=True,
+    ):
+      try:
+        engine_pg = obtener_motor_postgres()
+        # Consulta para traer los medidores inteligentes que NO tienen match por predio en usuarios_miaa_conmedidor
+        query_no_cruzados = text("""
+                    SELECT m.* 
+                    FROM "Medidores"."medidores_inteligentes" AS m
+                    WHERE NOT EXISTS (
+                        SELECT 1 
+                        FROM "Usuarios"."usuarios_miaa_conmedidor" AS u
+                        WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = TRIM(CAST(m.predio AS TEXT))
+                    )
+                """)
+        df_no_cruzados = pd.read_sql(query_no_cruzados, con=engine_pg)
+
+        if df_no_cruzados.empty:
+          st.success(
+              "¡Excelente! Todos los registros de `medidores_inteligentes` tienen un predio válido que coincide en `usuarios_miaa_conmedidor`."
+          )
+        else:
+          st.warning(
+              f"Se encontraron **{len(df_no_cruzados):,}** registros en `medidores_inteligentes` que NO pudieron cruzarse."
+          )
+
+          # Análisis de causas de no inserción
+          def clasificar_motivo(row):
+            p = row.get("predio")
+            if pd.isna(p):
+              return "Predio Nulo (NULL en base de datos)"
+            p_str = str(p).strip()
+            if p_str == "" or p_str.lower() in ["none", "nan", "null", "0"]:
+              return "Predio Vacío, Cero o Inválido"
+            return "Predio no existe en la tabla usuarios_miaa_conmedidor"
+
+          df_no_cruzados["Motivo_No_Insercion"] = df_no_cruzados.apply(
+              clasificar_motivo, axis=1
+          )
+
+          st.markdown(
+              "##### 📊 Resumen de Motivos por los que no se cruzaron:"
+          )
+          conteo_motivos = df_no_cruzados["Motivo_No_Insercion"].value_counts()
+          st.dataframe(conteo_motivos, use_container_width=True)
+
+          st.markdown(
+              "##### 📋 Listado Detallado de Registros No Cruzados:"
+          )
+          st.dataframe(df_no_cruzados, use_container_width=True, height=350)
+      except Exception as e:
+        st.error(f"Error al realizar el diagnóstico de predios: {e}")
 
   st.markdown(
       "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
