@@ -169,17 +169,14 @@ def cargar_pagina_usuarios_db(limit=50, offset=0):
 
 @st.cache_data(ttl=60)
 def cargar_pagina_medidores_inteligentes(limit=50, offset=0):
-  try:
-    engine_pg = obtener_motor_postgres()
-    query = text("SELECT * FROM medidores_inteligentes LIMIT :lim OFFSET :off")
-    return pd.read_sql(
-        query, con=engine_pg, params={"lim": limit, "off": offset}
-    )
-  except Exception as e:
-    agregar_log(
-        f"❌ [ERROR DB] Error al cargar página de medidores_inteligentes: {e}"
-    )
-    return pd.DataFrame()
+    try:
+        engine_pg = obtener_motor_postgres()
+        # Apuntando explícitamente al esquema "Medidores" y la tabla "medidores_inteligentes"
+        query = text('SELECT * FROM "Medidores"."medidores_inteligentes" LIMIT :lim OFFSET :off')
+        return pd.read_sql(query, con=engine_pg, params={"lim": limit, "off": offset})
+    except Exception as e:
+        agregar_log(f"❌ [ERROR DB] Error al cargar página de medidores_inteligentes: {e}")
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=300)
@@ -1106,62 +1103,61 @@ with tab2:
     st.warning("No hay datos cargados desde la API.")
 
 with tab3:
-  st.subheader("🛠️ Gestión de la tabla: medidores_inteligentes")
-  st.markdown(
-      "Desde aquí puedes gestionar y actualizar de forma masiva los campos"
-      " requeridos de la tabla `medidores_inteligentes` en tu base de datos"
-      " PostgreSQL."
-  )
+    st.subheader("🛠️ Gestión de la tabla: medidores_inteligentes")
+    st.markdown("Desde aquí puedes gestionar y actualizar de forma masiva los campos requeridos de la tabla `medidores_inteligentes` dentro del esquema `Medidores` en tu base de datos PostgreSQL[cite: 4].")
 
-  with st.container(border=True):
-    st.markdown(
-        "#### 🔢 Asignar Etapa 1 a todos los registros"
-    )
-    st.markdown(
-        "Esta acción actualizará el campo **etapa** con el valor **1** en"
-        " absolutamente todos los registros de la tabla"
-        " `medidores_inteligentes`."
-    )
-
-    confirmar_etapa = st.checkbox(
-        "⚠️ Confirmo que deseo actualizar el campo etapa a 1 para todos los"
-        " registros de medidores_inteligentes",
-        key="chk_confirmar_etapa_1",
-    )
-
-    if st.button(
-        "Establecer etapa = 1 en toda la tabla",
-        type="primary",
-        key="btn_ejecutar_etapa_1",
-        use_container_width=True,
-    ):
-      if not confirmar_etapa:
-        st.error(
-            "Debes marcar la casilla de confirmación para ejecutar esta"
-            " actualización masiva."
+    with st.container(border=True):
+        st.markdown("#### 🔢 Asignar Etapa 1 a todos los registros")
+        st.markdown("Esta acción actualizará el campo **etapa** con el valor **1** en absolutamente todos los registros de la tabla `medidores_inteligentes`.")
+        
+        confirmar_etapa = st.checkbox(
+            "⚠️ Confirmo que deseo actualizar el campo etapa a 1 para todos los registros de medidores_inteligentes",
+            key="chk_confirmar_etapa_1"
         )
-      else:
-        try:
-          engine_pg = obtener_motor_postgres()
-          query_update_etapa = text(
-              "UPDATE medidores_inteligentes SET etapa = '1'"
-          )
+        
+        if st.button("Establecer etapa = 1 en toda la tabla", type="primary", key="btn_ejecutar_etapa_1", use_container_width=True):
+            if not confirmar_etapa:
+                st.error("Debes marcar la casilla de confirmación para ejecutar esta actualización masiva.")
+            else:
+                try:
+                    engine_pg = obtener_motor_postgres()
+                    # Actualización masiva apuntando al esquema correcto
+                    query_update_etapa = text('UPDATE "Medidores"."medidores_inteligentes" SET etapa = \'1\'')
+                    
+                    with engine_pg.connect() as conn_etapa:
+                        conn_etapa.execute(query_update_etapa)
+                        conn_etapa.commit()
+                        
+                    agregar_log("⚡ [DB UPDATE] Se actualizó exitosamente el campo 'etapa' a '1' en todos los registros de Medidores.medidores_inteligentes[cite: 4].")
+                    st.success("¡Se han actualizado correctamente todos los registros con la etapa 1!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al actualizar la tabla medidores_inteligentes: {e}")
 
-          with engine_pg.connect() as conn_etapa:
-            conn_etapa.execute(query_update_etapa)
-            conn_etapa.commit()
+    st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
+    st.markdown("#### 👁️ Vista previa de registros: `medidores_inteligentes`")
 
-          agregar_log(
-              "⚡ [DB UPDATE] Se actualizó exitosamente el campo 'etapa' a '1'"
-              " en todos los registros de medidores_inteligentes."
-          )
-          st.success(
-              "¡Se han actualizado correctamente todos los registros con la"
-              " etapa 1!"
-          )
-          st.rerun()
-        except Exception as e:
-          st.error(f"Error al actualizar la tabla medidores_inteligentes: {e}")
+    try:
+        engine_pg = obtener_motor_postgres()
+        with engine_pg.connect() as conn_count:
+            res_cnt = conn_count.execute(text('SELECT COUNT(*) FROM "Medidores"."medidores_inteligentes"'))
+            total_mi = res_cnt.scalar() or 0
+
+        if total_mi > 0:
+            t3_filas = 50
+            t3_total_pags = max(1, (total_mi // t3_filas) + (1 if total_mi % t3_filas > 0 else 0))
+            t3_pag = st.selectbox(
+                "Seleccionar página (medidores_inteligentes)",
+                range(1, t3_total_pags + 1),
+                key="select_pag_t3"
+            )
+            t3_off = (t3_pag - 1) * t3_filas
+            df_t3 = cargar_pagina_medidores_inteligentes(limit=t3_filas, offset=t3_off)
+            st.dataframe(df_t3, use_container_width=True, height=400)
+        else:
+            st.warning("La tabla `medidores_inteligentes` está actualmente vacía.")
+    except Exception as e:
+        st.warning(f"No se pudo cargar la vista previa de `medidores_inteligentes`: {e}")
 
   st.markdown(
       "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
