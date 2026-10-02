@@ -157,7 +157,6 @@ def obtener_total_etapa_1():
   try:
     engine_pg = obtener_motor_postgres()
     with engine_pg.connect() as conn:
-      # Corregido: '1' como cadena de texto al ser 'etapa' de tipo varchar
       result = conn.execute(
           text(
               'SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor"'
@@ -166,7 +165,24 @@ def obtener_total_etapa_1():
       )
       return result.scalar() or 0
   except Exception as e:
-    agregar_log(f"⚠️️ [AVISO DB] No se pudo obtener el conteo de etapa 1: {e}")
+    agregar_log(f"⚠️ [AVISO DB] No se pudo obtener el conteo de etapa 1: {e}")
+    return 0
+
+
+@st.cache_data(ttl=60)
+def obtener_total_etapa_2():
+  try:
+    engine_pg = obtener_motor_postgres()
+    with engine_pg.connect() as conn:
+      result = conn.execute(
+          text(
+              'SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor"'
+              " WHERE etapa = '2'"
+          )
+      )
+      return result.scalar() or 0
+  except Exception as e:
+    agregar_log(f"⚠️ [AVISO DB] No se pudo obtener el conteo de etapa 2: {e}")
     return 0
 
 
@@ -337,7 +353,7 @@ def procesar_cruce_datos(
 ):
   if df_filtrado.empty or df_conmedidor_pg.empty:
     agregar_log(
-        "⚠ [CRUCE] Uno de los DataFrames está vacío. No se puede realizar el"
+        "⚠️ [CRUCE] Uno de los DataFrames está vacío. No se puede realizar el"
         " cruce."
     )
     return df_conmedidor_pg, 0, 0
@@ -429,7 +445,9 @@ def procesar_cruce_datos(
       nuevas_lecturas,
       nuevas_f_reg,
       nuevas_f_inst,
+      nuevas_etapas,
   ) = (
+      [],
       [],
       [],
       [],
@@ -466,6 +484,9 @@ def procesar_cruce_datos(
         nuevas_f_reg.append(dict_f_reg_p.get(kp, pd.NaT))
         nuevas_f_inst.append(dict_f_inst_p.get(kp, pd.NaT))
 
+        # Asignar Etapa '2' a los registros que hicieron match con la API
+        nuevas_etapas.append("2")
+
     if not match_encontrado:
       nuevas_series.append(r.get("_Serie", ""))
       nuevas_colonias.append(r.get("_Colonia", ""))
@@ -475,6 +496,8 @@ def procesar_cruce_datos(
       nuevas_lecturas.append(r.get("_Lectura_actual", 0))
       nuevas_f_reg.append(r.get("_Fecha_registro", pd.NaT))
       nuevas_f_inst.append(r.get("_Fecha_instalacion", pd.NaT))
+      # Mantener la etapa existente o vacía si no hizo match con la API
+      nuevas_etapas.append(r.get("etapa", None))
 
   if registrar_auditoria:
     for _, api_row in df_api.iterrows():
@@ -494,6 +517,7 @@ def procesar_cruce_datos(
   df_conmedidor_pg["_Domicilio"] = nuevos_domicilios
   df_conmedidor_pg["_Instalador"] = nuevos_instaladores
   df_conmedidor_pg["_Tipo_instalador"] = nuevos_tipos
+  df_conmedidor_pg["etapa"] = nuevas_etapas
 
   lecturas_limpias = []
   for v in nuevas_lecturas:
@@ -734,6 +758,7 @@ if "intervalo_minutos_sel" not in st.session_state:
 # ==========================================
 total_registros_db = obtener_total_registros()
 total_etapa_1_db = obtener_total_etapa_1()
+total_etapa_2_db = obtener_total_etapa_2()
 df_filtrado = cargar_datos_api()
 
 total_serie_api = 0
@@ -861,8 +886,8 @@ with col_ind3:
         <div class="metric-card">
             <div style="font-size: 28px; margin-right: 15px;">🔢</div>
             <div class="metric-content">
-                <div class="metric-title">MEDIDORES ETAPA 1</div>
-                <div class="metric-value">{total_etapa_1_db:,}</div>
+                <div class="metric-title">MEDIDORES ETAPA 1 / 2</div>
+                <div class="metric-value" style="font-size: 16px; margin-top: 2px;">1: {total_etapa_1_db:,} | 2: {total_etapa_2_db:,}</div>
             </div>
         </div>
     """,
@@ -992,6 +1017,7 @@ with col_limpieza:
         "_Lectura_actual",
         "_Fecha_registro",
         "_Fecha_instalacion",
+        "etapa",
     ]
 
     campos_a_limpiar_masivo = []
@@ -1002,7 +1028,7 @@ with col_limpieza:
           campos_a_limpiar_masivo.append(campo)
 
     confirmar_masivo = st.checkbox(
-        "⚠ Confirmo que quiero vaciar masivamente estos campos en TODA la tabla",
+        "⚠️ Confirmo que quiero vaciar masivamente estos campos en TODA la tabla",
         key="chk_confirmar_masivo",
     )
 
@@ -1268,7 +1294,7 @@ with tab3:
   )
 
   # ==========================================
-  # NUEVA SECCIÓN DE DIAGNÓSTICO: PREDIOS NO INSERTADOS / NO CRUZADOS
+  # SECCIÓN DE DIAGNÓSTICO: PREDIOS NO INSERTADOS / NO CRUZADOS
   # ==========================================
   with st.container(border=True):
     st.markdown(
@@ -1285,7 +1311,6 @@ with tab3:
     ):
       try:
         engine_pg = obtener_motor_postgres()
-        # Consulta para traer los medidores inteligentes que NO tienen match por predio en usuarios_miaa_conmedidor
         query_no_cruzados = text("""
                     SELECT m.* 
                     FROM "Medidores"."medidores_inteligentes" AS m
@@ -1306,7 +1331,6 @@ with tab3:
               f"Se encontraron **{len(df_no_cruzados):,}** registros en `medidores_inteligentes` que NO pudieron cruzarse."
           )
 
-          # Análisis de causas de no inserción
           def clasificar_motivo(row):
             p = row.get("predio")
             if pd.isna(p):
