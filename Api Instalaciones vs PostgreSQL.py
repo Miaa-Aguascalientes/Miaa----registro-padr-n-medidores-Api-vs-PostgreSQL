@@ -425,7 +425,6 @@ def ejecutar_sincronizacion_automatica(
         " PostgreSQL...",
     )
 
-    # Consulta SQL optimizada con conversión segura a texto para evitar errores de tipos
     query_update_masivo = text("""
             UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
             SET 
@@ -589,7 +588,7 @@ with st.sidebar:
     sig_tiempo, _ = calcular_siguiente_tiempo_reloj(minutos_seleccionados)
     st.session_state.next_run_time = sig_tiempo
     agregar_log(
-        f"▶️️ Temporizador activado. Próxima ejecución sincronizada al reloj a"
+        f"▶ Temporizador activado. Próxima ejecución sincronizada al reloj a"
         f" las {sig_tiempo.strftime('%H:%M:%S')}."
     )
     st.success(
@@ -601,7 +600,7 @@ with st.sidebar:
   if btn_parar:
     st.session_state.is_running = False
     st.session_state.next_run_time = None
-    agregar_log("⏹️ Temporizador detenido manualmente por el usuario.")
+    agregar_log("⏹️️ Temporizador detenido manualmente por el usuario.")
     st.warning("Temporizador detenido.")
     st.rerun()
 
@@ -1008,6 +1007,131 @@ with tab1:
             )
         except Exception as e:
           st.error(f"Error al ejecutar la auditoría de la API: {e}")
+
+  # ==========================================
+  # SECCIÓN NUEVA: GESTIÓN Y DETECCIÓN DE DUPLICADOS
+  # ==========================================
+  with st.container(border=True):
+    st.markdown("#### 👥 Detección y Gestión de Registros Duplicados")
+    st.markdown(
+        "Detecta registros duplicados en la base de datos `usuarios_miaa_conmedidor`"
+        " evaluando la coincidencia por el campo **Predio_Viv** u otros criterios de unicidad."
+    )
+
+    col_dup1, col_dup2 = st.columns(2)
+    with col_dup1:
+      columna_duplicidad = st.selectbox(
+          "Columna para evaluar duplicidad",
+          ["Predio_Viv", "_Serie", "Cliente"],
+          key="sel_col_duplicados",
+      )
+    with col_dup2:
+      accion_duplicados = st.selectbox(
+          "Acción sobre duplicados",
+          [
+              "Ver listado de duplicados",
+              "Eliminar duplicados (mantener el primero)",
+              "Eliminar duplicados (mantener el último)",
+          ],
+          key="sel_accion_duplicados",
+      )
+
+    if st.button(
+        "Ejecutar Análisis / Gestión de Duplicados",
+        key="btn_ejecutar_duplicados",
+        use_container_width=True,
+    ):
+      try:
+        engine_pg = obtener_motor_postgres()
+        # Consultar la columna para verificar duplicados en PostgreSQL
+        query_check_dup = text(f"""
+                    SELECT "{columna_duplicidad}", COUNT(*) as total_duplicados
+                    FROM "Usuarios"."usuarios_miaa_conmedidor"
+                    WHERE "{columna_duplicidad}" IS NOT NULL 
+                      AND TRIM(CAST("{columna_duplicidad}" AS TEXT)) NOT IN ('', 'none', 'nan', 'null', '0')
+                    GROUP BY "{columna_duplicidad}"
+                    HAVING COUNT(*) > 1
+                    ORDER BY total_duplicados DESC;
+                """)
+        with engine_pg.connect() as conn_dup:
+          df_dup_res = pd.read_sql(query_check_dup, con=conn_dup)
+
+        if df_dup_res.empty:
+          st.success(
+              f"✨ ¡No se encontraron registros duplicados evaluando por el campo **{columna_duplicidad}**!"
+          )
+        else:
+          total_grupos_dup = len(df_dup_res)
+          total_filas_repetidas = (
+              df_dup_res["total_duplicados"].sum() - total_grupos_dup
+          )
+          st.warning(
+              f"⚠️ Se detectaron **{total_grupos_dup:,}** valores duplicados (que agrupan un total de **{total_filas_repetidas:,}** registros repetidos) en el campo `{columna_duplicidad}`."
+          )
+
+          if accion_duplicados == "Ver listado de duplicados":
+            st.markdown(
+                "##### 📋 Detalle de Grupos Duplicados en la Base de Datos:"
+            )
+            st.dataframe(df_dup_res, use_container_width=True, height=300)
+
+            # Cargar los registros completos que forman parte de los duplicados
+            lista_valores_dup = df_dup_res[columna_duplicidad].tolist()
+            if lista_valores_dup:
+              format_strings = ",".join([f":val_{i}" for i in range(len(lista_valores_dup))])
+              params = {
+                  f"val_{i}": val for i, val in enumerate(lista_valores_dup)
+              }
+              query_rows_dup = text(f"""
+                                SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"
+                                WHERE "{columna_duplicidad}" IN ({format_strings})
+                                ORDER BY "{columna_duplicidad}";
+                            """)
+              with engine_pg.connect() as conn_drows:
+                df_rows_dup = pd.read_sql(
+                    query_rows_dup, con=conn_drows, params=params
+                )
+              st.markdown("##### 🔍 Registros Completos Afectados:")
+              st.dataframe(df_rows_dup, use_container_width=True, height=350)
+
+          else:
+            # Lógica para eliminar duplicados directamente en PostgreSQL conservando el ID o rowid / ctid
+            keep_mode = (
+                "MIN(ctid)"
+                if "primero" in accion_duplicados.lower()
+                else "MAX(ctid)"
+            )
+            query_delete_dup = text(f"""
+                        DELETE FROM "Usuarios"."usuarios_miaa_conmedidor"
+                        WHERE ctid NOT IN (
+                            SELECT {keep_mode}
+                            FROM "Usuarios"."usuarios_miaa_conmedidor"
+                            WHERE "{columna_duplicidad}" IS NOT NULL 
+                              AND TRIM(CAST("{columna_duplicidad}" AS TEXT)) NOT IN ('', 'none', 'nan', 'null', '0')
+                            GROUP BY "{columna_duplicidad}"
+                        )
+                        AND "{columna_duplicidad}" IS NOT NULL
+                        AND TRIM(CAST("{columna_duplicidad}" AS TEXT)) NOT IN ('', 'none', 'nan', 'null', '0');
+                    """)
+            with engine_pg.connect() as conn_del:
+              res_del = conn_del.execute(query_delete_dup)
+              conn_del.commit()
+              filas_eliminadas = (
+                  res_del.rowcount if hasattr(res_del, "rowcount") else 0
+              )
+
+            agregar_log(
+                f"🗑️ [DUPLICADOS ELIMINADOS] Se eliminaron {filas_eliminadas:,} registros duplicados basándose en '{columna_duplicidad}'."
+            )
+            st.success(
+                f"¡Se han eliminado correctamente **{filas_eliminadas:,}** registros duplicados de la tabla!"
+            )
+            st.rerun()
+
+      except Exception as e:
+        st.error(
+            f"❌ Error al procesar la gestión de registros duplicados: {e}"
+        )
 
 with tab2:
   st.subheader(
