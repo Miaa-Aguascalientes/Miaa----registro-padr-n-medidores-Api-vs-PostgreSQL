@@ -346,223 +346,8 @@ def cargar_datos_api():
 
 
 # ==========================================
-# 4. FUNCIÓN DE CRUCE ESTRICTO Y EJECUCIÓN
+# 4. FUNCIÓN DE CRUCE ULTRA RÁPIDO (STAGING + SQL)
 # ==========================================
-def procesar_cruce_datos(
-    df_conmedidor_pg, df_filtrado, registrar_auditoria=False
-):
-  if df_filtrado.empty or df_conmedidor_pg.empty:
-    agregar_log(
-        "⚠️ [CRUCE] Uno de los DataFrames está vacío. No se puede realizar el"
-        " cruce."
-    )
-    return df_conmedidor_pg, 0, 0
-
-  df_api = df_filtrado.copy()
-  df_api["key_predio"] = (
-      df_api["Predio_Viv"].astype(str).str.strip()
-      if "Predio_Viv" in df_api.columns
-      else ""
-  )
-  invalidos = {"none", "nan", "", "nat", "0", "null", "None", "NaN"}
-
-  def mapear_tipo_externo(val):
-    if val in [True, 1, "1", "true", "True", "YES", "yes", "S", "s"]:
-      return "Externo"
-    elif val in [False, 0, "0", "false", "False", "NO", "no", "N", "n"]:
-      return "MIAA"
-    return "MIAA"
-
-  if "usuarioExterno" in df_api.columns:
-    df_api["tipo_calculado"] = df_api["usuarioExterno"].apply(
-        mapear_tipo_externo
-    )
-  else:
-    df_api["tipo_calculado"] = "MIAA"
-
-  df_api_con_predio = df_api[
-      ~df_api["key_predio"].str.lower().isin(invalidos)
-  ].copy()
-
-  dict_serie_p = dict(
-      zip(df_api_con_predio["key_predio"], df_api_con_predio.get("serie", ""))
-  )
-  dict_colonia_p = dict(
-      zip(
-          df_api_con_predio["key_predio"], df_api_con_predio.get("colonia", "")
-      )
-  )
-  dict_domicilio_p = dict(
-      zip(
-          df_api_con_predio["key_predio"],
-          df_api_con_predio.get("domicilio", ""),
-      )
-  )
-  dict_instalador_p = dict(
-      zip(
-          df_api_con_predio["key_predio"],
-          df_api_con_predio.get("usuarioNombre", ""),
-      )
-  )
-  dict_lectura_p = dict(
-      zip(
-          df_api_con_predio["key_predio"],
-          df_api_con_predio.get("lecturaActual", 0),
-      )
-  )
-  dict_f_reg_p = dict(
-      zip(
-          df_api_con_predio["key_predio"],
-          df_api_con_predio.get("fechaRegistro", ""),
-      )
-  )
-  dict_f_inst_p = dict(
-      zip(
-          df_api_con_predio["key_predio"],
-          df_api_con_predio.get("fechaInstalacion", ""),
-      )
-  )
-  dict_tipo_p = dict(
-      zip(
-          df_api_con_predio["key_predio"],
-          df_api_con_predio.get("tipo_calculado", "MIAA"),
-      )
-  )
-
-  df_conmedidor_pg["key_predio"] = (
-      df_conmedidor_pg["Predio_Viv"].astype(str).str.strip()
-      if "Predio_Viv" in df_conmedidor_pg.columns
-      else ""
-  )
-
-  predios_usados_pg = set()
-  (
-      nuevas_series,
-      nuevas_colonias,
-      nuevos_domicilios,
-      nuevos_instaladores,
-      nuevos_tipos,
-      nuevas_lecturas,
-      nuevas_f_reg,
-      nuevas_f_inst,
-      nuevas_etapas,
-  ) = (
-      [],
-      [],
-      [],
-      [],
-      [],
-      [],
-      [],
-      [],
-      [],
-  )
-
-  for _, r in df_conmedidor_pg.iterrows():
-    kp = str(r.get("key_predio", "")).strip()
-    match_encontrado = False
-
-    if kp and kp.lower() not in invalidos and kp in dict_serie_p:
-      val_s = dict_serie_p[kp]
-      if pd.notna(val_s) and str(val_s).strip().lower() not in invalidos:
-        predios_usados_pg.add(kp)
-        match_encontrado = True
-
-        nuevas_series.append(val_s)
-        nuevas_colonias.append(dict_colonia_p.get(kp, r.get("_Colonia", "")))
-        nuevos_domicilios.append(
-            dict_domicilio_p.get(kp, r.get("_Domicilio", ""))
-        )
-        nuevos_instaladores.append(
-            dict_instalador_p.get(kp, r.get("_Instalador", ""))
-        )
-        nuevos_tipos.append(dict_tipo_p.get(kp, r.get("_Tipo_instalador", "")))
-
-        lec = dict_lectura_p.get(kp, 0)
-        nuevas_lecturas.append(lec if not isinstance(lec, (list, dict)) else 0)
-
-        nuevas_f_reg.append(dict_f_reg_p.get(kp, pd.NaT))
-        nuevas_f_inst.append(dict_f_inst_p.get(kp, pd.NaT))
-
-        # Asignar Etapa '2' a los registros que hicieron match con la API
-        nuevas_etapas.append("2")
-
-    if not match_encontrado:
-      nuevas_series.append(r.get("_Serie", ""))
-      nuevas_colonias.append(r.get("_Colonia", ""))
-      nuevos_domicilios.append(r.get("_Domicilio", ""))
-      nuevos_instaladores.append(r.get("_Instalador", ""))
-      nuevos_tipos.append(r.get("_Tipo_instalador", "MIAA"))
-      nuevas_lecturas.append(r.get("_Lectura_actual", 0))
-      nuevas_f_reg.append(r.get("_Fecha_registro", pd.NaT))
-      nuevas_f_inst.append(r.get("_Fecha_instalacion", pd.NaT))
-      # Mantener la etapa existente o vacía si no hizo match con la API
-      nuevas_etapas.append(r.get("etapa", None))
-
-  if registrar_auditoria:
-    for _, api_row in df_api.iterrows():
-      kp_val = str(api_row.get("key_predio", "")).strip()
-      if (
-          kp_val
-          and kp_val not in predios_usados_pg
-          and kp_val.lower() not in invalidos
-      ):
-        agregar_log(
-            f"⚠️ [API NO MATCH] Registro API no encontrado en Postgres ->"
-            f" Predio_Viv: '{kp_val}'"
-        )
-
-  df_conmedidor_pg["_Serie"] = nuevas_series
-  df_conmedidor_pg["_Colonia"] = nuevas_colonias
-  df_conmedidor_pg["_Domicilio"] = nuevos_domicilios
-  df_conmedidor_pg["_Instalador"] = nuevos_instaladores
-  df_conmedidor_pg["_Tipo_instalador"] = nuevos_tipos
-  df_conmedidor_pg["etapa"] = nuevas_etapas
-
-  lecturas_limpias = []
-  for v in nuevas_lecturas:
-    try:
-      if pd.isna(v) or str(v).strip().lower() in ["none", "nan", "", "nat"]:
-        lecturas_limpias.append(0.0)
-      else:
-        lecturas_limpias.append(float(v))
-    except (ValueError, TypeError):
-      lecturas_limpias.append(0.0)
-
-  df_conmedidor_pg["_Lectura_actual"] = lecturas_limpias
-
-  def convertir_a_zona_mexico_segura(serie_entrada):
-    s_dt = pd.to_datetime(serie_entrada, errors="coerce")
-    resultados = []
-    for val in s_dt:
-      if pd.isna(val):
-        resultados.append(pd.NaT)
-      else:
-        try:
-          if val.tzinfo is not None:
-            resultados.append(val.astimezone(ZONA_MEXICO))
-          else:
-            localizada = val.tz_localize(
-                "UTC", nonexistent="shift_forward", ambiguous="NaT"
-            )
-            resultados.append(localizada.astimezone(ZONA_MEXICO))
-        except Exception:
-          resultados.append(pd.NaT)
-    return pd.Series(resultados, index=df_conmedidor_pg.index)
-
-  df_conmedidor_pg["_Fecha_registro"] = convertir_a_zona_mexico_segura(
-      nuevas_f_reg
-  )
-  df_conmedidor_pg["_Fecha_instalacion"] = convertir_a_zona_mexico_segura(
-      nuevas_f_inst
-  )
-
-  df_conmedidor_pg = df_conmedidor_pg.drop(
-      columns=["key_predio"], errors="ignore"
-  )
-  return df_conmedidor_pg, 0, 0
-
-
 def ejecutar_sincronizacion_automatica(
     barra_progreso_placeholder=None,
     texto_estado_placeholder=None,
@@ -584,11 +369,11 @@ def ejecutar_sincronizacion_automatica(
       texto_estado_placeholder.markdown(
           f"🔄 **{mensaje}** ({int(valor_pct * 100)}%)"
       )
-    time.sleep(0.1)
+    time.sleep(0.05)
 
   actualizar_progreso(
       0.15,
-      "[PASO 1/6] Iniciando ciclo. Conectando con API de instalaciones...",
+      "[PASO 1/4] Conectando con API de instalaciones para descargar registros...",
   )
   df_filtrado = cargar_datos_api()
 
@@ -600,119 +385,104 @@ def ejecutar_sincronizacion_automatica(
 
   total_descargados = len(df_filtrado)
   actualizar_progreso(
-      0.30,
-      f"[PASO 2/6] API OK. Se descargaron {total_descargados:,} registros de"
-      " instalaciones.",
+      0.35,
+      f"[PASO 2/4] API OK. {total_descargados:,} registros descargados."
+      " Preparando tabla temporal en PostgreSQL...",
   )
 
   try:
-    actualizar_progreso(
-        0.50, "[PASO 3/6] Conectando al motor PostgreSQL..."
-    )
     engine_pg = obtener_motor_postgres()
 
-    actualizar_progreso(
-        0.62,
-        "[PASO 4/6] Preparando lectura fraccionada de PostgreSQL...",
-    )
-
-    with engine_pg.connect() as conn:
-      res_count = conn.execute(
-          text('SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor"')
-      )
-      total_est_pg = res_count.scalar() or 1
-
-    actualizar_progreso(
-        0.64,
-        f"[PASO 4/6] Tabla detectada con ~{total_est_pg:,} registros."
-        " Iniciando descarga por bloques...",
-    )
-
-    chunk_size = 10000
-    chunks = []
-    pci_min = 0.65
-    pci_max = 0.79
-    total_chunks_estimados = max(
-        1,
-        (total_est_pg // chunk_size)
-        + (1 if total_est_pg % chunk_size > 0 else 0),
-    )
-
-    chunk_contador = 0
-    for chunk in pd.read_sql(
-        'SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"',
-        con=engine_pg,
-        chunksize=chunk_size,
-    ):
-      chunks.append(chunk)
-      chunk_contador += 1
-
-      progreso_actual = pci_min + (
-          (chunk_contador / total_chunks_estimados) * (pci_max - pci_min)
-      )
-      progreso_actual = min(pci_max, progreso_actual)
-
-      filas_acumuladas = sum(len(c) for c in chunks)
+    # Preparar DataFrame para staging (convertir tipos complejos a strings para evitar errores SQL)
+    df_staging = df_filtrado.copy()
+    if "Predio_Viv" not in df_staging.columns:
       actualizar_progreso(
-          round(progreso_actual, 3),
-          f"[PASO 4/6] Leyendo bloques de PostgreSQL... Bloque"
-          f" {chunk_contador}/{total_chunks_estimados} ({filas_acumuladas:,}"
-          " filas cargadas)",
+          1.0, "[ERROR] La columna Predio_Viv no existe en los datos de la API."
       )
+      return False
 
-    df_conmedidor_pg = (
-        pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+    df_staging["Predio_Viv_clean"] = (
+        df_staging["Predio_Viv"].astype(str).str.strip()
     )
 
     actualizar_progreso(
-        0.80,
-        "[PASO 4/6] Lectura de PostgreSQL finalizada al 100% por bloques.",
+        0.55,
+        "[PASO 3/4] Cargando datos de la API a la tabla temporal (Staging)"
+        " en PostgreSQL...",
     )
 
-  except Exception as ex:
-    actualizar_progreso(1.0, f"[ERROR PG] Falló la lectura de PostgreSQL: {ex}")
-    return False
-
-  if not df_conmedidor_pg.empty:
-    total_registros_pg = len(df_conmedidor_pg)
-    actualizar_progreso(
-        0.82,
-        f"[PASO 5/6] PostgreSQL leído con éxito ({total_registros_pg:,} registros"
-        " totales). Iniciando cruce estricto de datos...",
-    )
-
-    df_actualizado, _, _ = procesar_cruce_datos(
-        df_conmedidor_pg, df_filtrado, registrar_auditoria=True
+    # Subir a tabla temporal staging con bloques de 5000 para máximo rendimiento
+    df_staging.to_sql(
+        "_staging_api_instalaciones",
+        con=engine_pg,
+        schema="Usuarios",
+        if_exists="replace",
+        index=False,
+        chunksize=5000,
     )
 
     actualizar_progreso(
-        0.92,
-        "[PASO 6/6] Cruce completado. Guardando y actualizando registros en"
+        0.75,
+        "[PASO 4/4] Ejecutando actualización masiva (UPDATE FROM JOIN) en"
         " PostgreSQL...",
     )
 
-    try:
-      df_actualizado.to_sql(
-          "usuarios_miaa_conmedidor",
-          con=engine_pg,
-          schema="Usuarios",
-          if_exists="replace",
-          index=False,
+    # Consulta SQL ultra rápida ejecutada directamente en el servidor de base de datos
+    query_update_masivo = text("""
+            UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
+            SET 
+                "_Serie" = COALESCE(s.serie, u."_Serie"),
+                "_Colonia" = COALESCE(s.colonia, u."_Colonia"),
+                "_Domicilio" = COALESCE(s.domicilio, u."_Domicilio"),
+                "_Instalador" = COALESCE(s."usuarioNombre", u."_Instalador"),
+                "_Tipo_instalador" = CASE 
+                    WHEN s."usuarioExterno" IN (true, 1, '1', 'true', 'True', 'YES', 'yes', 'S', 's') THEN 'Externo'
+                    ELSE 'MIAA'
+                END,
+                "_Lectura_actual" = CASE 
+                    WHEN s."lecturaActual" IS NOT NULL AND TRIM(CAST(s."lecturaActual" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                    THEN CAST(s."lecturaActual" AS DOUBLE PRECISION)
+                    ELSE u."_Lectura_actual"
+                END,
+                "_Fecha_registro" = CASE 
+                    WHEN s."fechaRegistro" IS NOT NULL AND TRIM(CAST(s."fechaRegistro" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                    THEN CAST(s."fechaRegistro" AS TIMESTAMP WITH TIME ZONE)
+                    ELSE u."_Fecha_registro"
+                END,
+                "_Fecha_instalacion" = CASE 
+                    WHEN s."fechaInstalacion" IS NOT NULL AND TRIM(CAST(s."fechaInstalacion" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                    THEN CAST(s."fechaInstalacion" AS TIMESTAMP WITH TIME ZONE)
+                    ELSE u."_Fecha_instalacion"
+                END,
+                etapa = '2'
+            FROM "Usuarios"."_staging_api_instalaciones" AS s
+            WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean"
+              AND s."Predio_Viv_clean" NOT IN ('none', 'nan', '', 'nat', '0', 'null', 'None', 'NaN');
+        """)
+
+    with engine_pg.connect() as conn:
+      result_up = conn.execute(query_update_masivo)
+      conn.commit()
+      filas_actualizadas = (
+          result_up.rowcount if hasattr(result_up, "rowcount") else 0
       )
-      actualizar_progreso(
-          1.0,
-          f"🎉 [CICLO EXITOSO] Sincronización 100% completada. Total"
-          f" procesados: {total_registros_pg:,} registros.",
+
+      # Limpiar y eliminar la tabla temporal de staging
+      conn.execute(
+          text('DROP TABLE IF EXISTS "Usuarios"."_staging_api_instalaciones"')
       )
-      return True
-    except Exception as ex:
-      actualizar_progreso(
-          1.0, f"[ERROR ESCRITURA PG] No se pudo guardar en SQL: {ex}"
-      )
-      return False
-  else:
+      conn.commit()
+
     actualizar_progreso(
-        1.0, "[AVISO] La tabla en PostgreSQL está vacía actualmente."
+        1.0,
+        f"🎉 [CICLO EXITOSO] Sincronización completada en segundos. Registros"
+        f" cruzados y actualizados en DB: {filas_actualizadas:,}.",
+    )
+    return True
+
+  except Exception as ex:
+    actualizar_progreso(
+        1.0, f"[ERROR CRÍTICO] Falló la sincronización en base de datos: {ex}"
     )
     return False
 
@@ -1109,7 +879,7 @@ with tab1:
                 <div class="metric-card">
                     <div class="metric-content">
                         <div class="metric-title">Estado de Carga</div>
-                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Consola en Vivo (Progreso Real)</div>
+                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Consola en Vivo (Staging SQL)</div>
                     </div>
                 </div>
             """,
@@ -1121,7 +891,7 @@ with tab1:
                 <div class="metric-card">
                     <div class="metric-content">
                         <div class="metric-title">Rendimiento</div>
-                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Alta Velocidad</div>
+                        <div class="metric-value" style="font-size: 15px; margin-top: 5px;">Ultra Rápido (Servidor DB)</div>
                     </div>
                 </div>
             """,
@@ -1129,6 +899,118 @@ with tab1:
       )
   else:
     st.warning("No se encontraron registros en la tabla.")
+
+  st.markdown(
+      "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
+  )
+
+  # ==========================================
+  # SECCIÓN: AUDITORÍA DE MEDIDORES DE LA API NO CRUZADOS
+  # ==========================================
+  with st.container(border=True):
+    st.markdown("#### 🔍 Diagnóstico de Medidores de la API No Cruzados")
+    st.markdown(
+        "Analiza los registros obtenidos desde la API de instalaciones y detecta"
+        " aquellos medidores que **no pudieron ser cruzados ni insertados** en"
+        " la tabla `usuarios_miaa_conmedidor`, indicando la razón exacta."
+    )
+
+    if st.button(
+        "Ejecutar Auditoría de Medidores API No Cruzados",
+        key="btn_auditar_api_no_cruzados",
+        use_container_width=True,
+    ):
+      if df_filtrado.empty:
+        st.warning("No hay datos cargados desde la API en este momento.")
+      else:
+        try:
+          engine_pg = obtener_motor_postgres()
+
+          with engine_pg.connect() as conn_pg:
+            df_pg_predios = pd.read_sql(
+                'SELECT DISTINCT TRIM(CAST("Predio_Viv" AS TEXT)) as predio_pg FROM'
+                ' "Usuarios"."usuarios_miaa_conmedidor" WHERE "Predio_Viv" IS'
+                " NOT NULL",
+                con=conn_pg,
+            )
+          set_predios_pg = set(
+              df_pg_predios["predio_pg"].dropna().astype(str).str.strip()
+          )
+
+          df_api_diag = df_filtrado.copy()
+          df_api_diag["key_predio"] = (
+              df_api_diag["Predio_Viv"].astype(str).str.strip()
+              if "Predio_Viv" in df_api_diag.columns
+              else ""
+          )
+          invalidos_diag = {
+              "none",
+              "nan",
+              "",
+              "nat",
+              "0",
+              "null",
+              "None",
+              "NaN",
+          }
+
+          registros_no_cruzados_api = []
+
+          for _, row in df_api_diag.iterrows():
+            kp = str(row.get("key_predio", "")).strip()
+            motivo = None
+
+            if pd.isna(row.get("Predio_Viv")) or kp == "":
+              motivo = "Predio Nulo o Vacío en la API"
+            elif kp.lower() in invalidos_diag:
+              motivo = f"Predio Inválido o Cero ('{kp}')"
+            elif kp not in set_predios_pg:
+              motivo = (
+                  "El Predio_Viv de la API no existe en la tabla"
+                  " usuarios_miaa_conmedidor"
+              )
+
+            if motivo:
+              row_dict = row.to_dict()
+              row_dict["Motivo_No_Cruzado"] = motivo
+              registros_no_cruzados_api.append(row_dict)
+
+          if not registros_no_cruzados_api:
+            st.success(
+                "¡Excelente! Absolutamente todos los medidores y registros de la"
+                " API encontraron coincidencia y fueron cruzados"
+                " correctamente."
+            )
+          else:
+            df_no_cruzados_api = pd.DataFrame(registros_no_cruzados_api)
+            st.warning(
+                f"Se detectaron **{len(df_no_cruzados_api):,}** medidores de la"
+                " API que NO pudieron cruzarse en la tabla de usuarios."
+            )
+
+            st.markdown(
+                "##### 📊 Resumen de Motivos por los que no se cruzaron:"
+            )
+            conteo_motivos_api = df_no_cruzados_api[
+                "Motivo_No_Cruzado"
+            ].value_counts()
+            st.dataframe(conteo_motivos_api, use_container_width=True)
+
+            st.markdown(
+                "##### 📋 Listado Detallado de Medidores API No Cruzados:"
+            )
+            cols_mostrar = [
+                c
+                for c in df_no_cruzados_api.columns
+                if c not in ["key_predio"]
+            ]
+            st.dataframe(
+                df_no_cruzados_api[cols_mostrar],
+                use_container_width=True,
+                height=350,
+            )
+        except Exception as e:
+          st.error(f"Error al ejecutar la auditoría de la API: {e}")
 
 with tab2:
   st.subheader(
@@ -1240,7 +1122,7 @@ with tab3:
     )
 
     confirmar_join_etapa = st.checkbox(
-        "⚠️ Confirmo que deseo actualizar el campo etapa en"
+        "⚠ Confirmo que deseo actualizar el campo etapa en"
         " `usuarios_miaa_conmedidor` basado en la coincidencia de predio",
         key="chk_confirmar_join_etapa",
     )
@@ -1297,11 +1179,12 @@ with tab3:
   # SECCIÓN DE DIAGNÓSTICO: PREDIOS NO INSERTADOS / NO CRUZADOS
   # ==========================================
   with st.container(border=True):
+    st.markdown("#### 🔍 Diagnóstico de Predios No Insertados / No Cruzados")
     st.markdown(
-        "#### 🔍 Diagnóstico de Predios No Insertados / No Cruzados"
-    )
-    st.markdown(
-        "Identifica qué registros de `medidores_inteligentes` **no encontraron coincidencia** en `usuarios_miaa_conmedidor` y descubre la razón exacta por la que no se insertaron (por ejemplo: predio nulo, vacío, espacios en blanco o inexistente en la tabla destino)."
+        "Identifica qué registros de `medidores_inteligentes` **no encontraron"
+        " coincidencia** en `usuarios_miaa_conmedidor` y descubre la razón"
+        " exacta por la que no se insertaron (por ejemplo: predio nulo,"
+        " vacío, espacios en blanco o inexistente en la tabla destino)."
     )
 
     if st.button(
@@ -1324,11 +1207,14 @@ with tab3:
 
         if df_no_cruzados.empty:
           st.success(
-              "¡Excelente! Todos los registros de `medidores_inteligentes` tienen un predio válido que coincide en `usuarios_miaa_conmedidor`."
+              "¡Excelente! Todos los registros de `medidores_inteligentes`"
+              " tienen un predio válido que coincide en"
+              " `usuarios_miaa_conmedidor`."
           )
         else:
           st.warning(
-              f"Se encontraron **{len(df_no_cruzados):,}** registros en `medidores_inteligentes` que NO pudieron cruzarse."
+              f"Se encontraron **{len(df_no_cruzados):,}** registros en"
+              " `medidores_inteligentes` que NO pudieron cruzarse."
           )
 
           def clasificar_motivo(row):
