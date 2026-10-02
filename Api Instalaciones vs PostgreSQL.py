@@ -393,7 +393,6 @@ def ejecutar_sincronizacion_automatica(
   try:
     engine_pg = obtener_motor_postgres()
 
-    # Preparar DataFrame para staging (convertir tipos complejos a strings para evitar errores SQL)
     df_staging = df_filtrado.copy()
     if "Predio_Viv" not in df_staging.columns:
       actualizar_progreso(
@@ -411,7 +410,6 @@ def ejecutar_sincronizacion_automatica(
         " en PostgreSQL...",
     )
 
-    # Subir a tabla temporal staging con bloques de 5000 para máximo rendimiento
     df_staging.to_sql(
         "_staging_api_instalaciones",
         con=engine_pg,
@@ -427,7 +425,7 @@ def ejecutar_sincronizacion_automatica(
         " PostgreSQL...",
     )
 
-    # Consulta SQL ultra rápida ejecutada directamente en el servidor de base de datos
+    # Consulta SQL optimizada con conversión segura a texto para evitar errores de tipos
     query_update_masivo = text("""
             UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
             SET 
@@ -436,7 +434,7 @@ def ejecutar_sincronizacion_automatica(
                 "_Domicilio" = COALESCE(s.domicilio, u."_Domicilio"),
                 "_Instalador" = COALESCE(s."usuarioNombre", u."_Instalador"),
                 "_Tipo_instalador" = CASE 
-                    WHEN s."usuarioExterno" IN (true, 1, '1', 'true', 'True', 'YES', 'yes', 'S', 's') THEN 'Externo'
+                    WHEN TRIM(CAST(s."usuarioExterno" AS TEXT)) IN ('true', 'True', '1', 'YES', 'yes', 'S', 's', 'TRUE') THEN 'Externo'
                     ELSE 'MIAA'
                 END,
                 "_Lectura_actual" = CASE 
@@ -467,7 +465,6 @@ def ejecutar_sincronizacion_automatica(
           result_up.rowcount if hasattr(result_up, "rowcount") else 0
       )
 
-      # Limpiar y eliminar la tabla temporal de staging
       conn.execute(
           text('DROP TABLE IF EXISTS "Usuarios"."_staging_api_instalaciones"')
       )
@@ -592,7 +589,7 @@ with st.sidebar:
     sig_tiempo, _ = calcular_siguiente_tiempo_reloj(minutos_seleccionados)
     st.session_state.next_run_time = sig_tiempo
     agregar_log(
-        f"▶️ Temporizador activado. Próxima ejecución sincronizada al reloj a"
+        f"▶️️ Temporizador activado. Próxima ejecución sincronizada al reloj a"
         f" las {sig_tiempo.strftime('%H:%M:%S')}."
     )
     st.success(
