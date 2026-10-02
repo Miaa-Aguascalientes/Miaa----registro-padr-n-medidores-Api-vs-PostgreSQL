@@ -172,7 +172,6 @@ def cargar_pagina_usuarios_db(limit=50, offset=0):
 def cargar_pagina_medidores_inteligentes(limit=50, offset=0):
   try:
     engine_pg = obtener_motor_postgres()
-    # Apuntando al esquema "Medidores" y la tabla "medidores_inteligentes"[cite: 4]
     query = text(
         'SELECT * FROM "Medidores"."medidores_inteligentes" LIMIT :lim OFFSET'
         " :off"
@@ -423,7 +422,6 @@ def procesar_cruce_datos(
       [],
   )
 
-  contador_predio = 0
   for _, r in df_conmedidor_pg.iterrows():
     kp = str(r.get("key_predio", "")).strip()
     match_encontrado = False
@@ -433,7 +431,6 @@ def procesar_cruce_datos(
       if pd.notna(val_s) and str(val_s).strip().lower() not in invalidos:
         predios_usados_pg.add(kp)
         match_encontrado = True
-        contador_predio += 1
 
         nuevas_series.append(val_s)
         nuevas_colonias.append(dict_colonia_p.get(kp, r.get("_Colonia", "")))
@@ -521,7 +518,7 @@ def procesar_cruce_datos(
   df_conmedidor_pg = df_conmedidor_pg.drop(
       columns=["key_predio"], errors="ignore"
   )
-  return df_conmedidor_pg, contador_predio, 0
+  return df_conmedidor_pg, 0, 0
 
 
 def ejecutar_sincronizacion_automatica(
@@ -642,7 +639,7 @@ def ejecutar_sincronizacion_automatica(
         " totales). Iniciando cruce estricto de datos...",
     )
 
-    df_actualizado, c_p, _ = procesar_cruce_datos(
+    df_actualizado, _, _ = procesar_cruce_datos(
         df_conmedidor_pg, df_filtrado, registrar_auditoria=True
     )
 
@@ -733,12 +730,12 @@ try:
   engine_pg = obtener_motor_postgres()
   with engine_pg.connect() as conn:
     res_serie_pg = conn.execute(
-        text(
-            'SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor" WHERE'
-            ' "_Serie" IS NOT NULL AND TRIM(CAST("_Serie" AS TEXT)) != \'\' AND'
-            " LOWER(TRIM(CAST(\"_Serie" AS TEXT))) NOT IN ('none', 'nan',"
-            " 'null')"
-        )
+        text("""
+            SELECT COUNT(*) FROM "Usuarios"."usuarios_miaa_conmedidor" 
+            WHERE "_Serie" IS NOT NULL 
+              AND TRIM(CAST("_Serie" AS TEXT)) != '' 
+              AND LOWER(TRIM(CAST("_Serie" AS TEXT))) NOT IN ('none', 'nan', 'null')
+        """)
     )
     total_serie_pg_lleno = res_serie_pg.scalar()
 except Exception:
@@ -754,7 +751,7 @@ with st.sidebar:
   )
   st.markdown("### 🚰 Panel de Control MIAA")
   st.markdown("---")
-  st.markdown("#### ⚙️️ Configuración")
+  st.markdown("#### ⚙ Configuración")
 
   opciones_intervalo = {
       "Cada 1 minuto": 1,
@@ -890,9 +887,6 @@ if st.session_state.is_running and st.session_state.next_run_time:
     st.session_state.next_run_time = sig_tiempo
     st.rerun()
   else:
-    _, segundos_restantes = calcular_siguiente_tiempo_reloj(
-        st.session_state.intervalo_minutos_sel
-    )
     segundos_totales_intervalo = st.session_state.intervalo_minutos_sel * 60
     segundos_restantes = max(
         0,
@@ -1147,7 +1141,6 @@ with tab3:
       else:
         try:
           engine_pg = obtener_motor_postgres()
-          # Actualización masiva apuntando al esquema correcto "Medidores"[cite: 4]
           query_update_etapa = text(
               'UPDATE "Medidores"."medidores_inteligentes" SET etapa = \'1\''
           )
