@@ -600,7 +600,7 @@ with st.sidebar:
   if btn_parar:
     st.session_state.is_running = False
     st.session_state.next_run_time = None
-    agregar_log("⏹️️ Temporizador detenido manualmente por el usuario.")
+    agregar_log("⏹ Temporizador detenido manualmente por el usuario.")
     st.warning("Temporizador detenido.")
     st.rerun()
 
@@ -901,6 +901,96 @@ with tab1:
   )
 
   # ==========================================
+  # SECCIÓN NUEVA: AUDITORÍA DE DISCREPANCIA (SERIE LLENA VS ETAPA 2)
+  # ==========================================
+  with st.container(border=True):
+    st.markdown(
+        "#### 🔍 Auditoría de Discrepancia: Serie Llena vs Etapa 2 (Los 2"
+        " Registros)"
+    )
+    st.markdown(
+        "Detecta aquellos registros en PostgreSQL que **tienen número de serie"
+        " (`_Serie` lleno)** pero cuyo campo **etapa NO es '2'** (o está en"
+        " blanco/etapa 1), explicando exactamente la discrepancia numérica."
+    )
+
+    col_disc1, col_disc2 = st.columns(2)
+    with col_disc1:
+      btn_analizar_disc = st.button(
+          "Ver los Registros con Discrepancia",
+          key="btn_ver_discrepancia_serie_etapa",
+          use_container_width=True,
+      )
+    with col_disc2:
+      btn_sinc_disc = st.button(
+          "Corregir y Marcar Etapa = '2' a estos registros",
+          type="primary",
+          key="btn_corregir_discrepancia",
+          use_container_width=True,
+      )
+
+    if btn_analizar_disc:
+      try:
+        engine_pg = obtener_motor_postgres()
+        query_disc = text("""
+                    SELECT * FROM "Usuarios"."usuarios_miaa_conmedidor"
+                    WHERE "_Serie" IS NOT NULL 
+                      AND TRIM(CAST("_Serie" AS TEXT)) != '' 
+                      AND LOWER(TRIM(CAST("_Serie" AS TEXT))) NOT IN ('none', 'nan', 'null')
+                      AND (etapa IS NULL OR TRIM(CAST(etapa AS TEXT)) != '2');
+                """)
+        with engine_pg.connect() as conn_disc:
+          df_discrepancias = pd.read_sql(query_disc, con=conn_disc)
+
+        if df_discrepancias.empty:
+          st.success(
+              "¡No hay discrepancias! Todos los medidores con serie tienen"
+              " exactamente etapa 2."
+          )
+        else:
+          st.warning(
+              f"Se encontraron **{len(df_discrepancias):,}** registros con"
+              " serie llena que no tienen etapa 2:"
+          )
+          st.dataframe(df_discrepancias, use_container_width=True, height=300)
+      except Exception as e:
+        st.error(f"Error al analizar la discrepancia: {e}")
+
+    if btn_sinc_disc:
+      try:
+        engine_pg = obtener_motor_postgres()
+        query_fix = text("""
+                    UPDATE "Usuarios"."usuarios_miaa_conmedidor"
+                    SET etapa = '2'
+                    WHERE "_Serie" IS NOT NULL 
+                      AND TRIM(CAST("_Serie" AS TEXT)) != '' 
+                      AND LOWER(TRIM(CAST("_Serie" AS TEXT))) NOT IN ('none', 'nan', 'null')
+                      AND (etapa IS NULL OR TRIM(CAST(etapa AS TEXT)) != '2');
+                """)
+        with engine_pg.connect() as conn_fix:
+          res_fix = conn_fix.execute(query_fix)
+          conn_fix.commit()
+          filas_corregidas = (
+              res_fix.rowcount if hasattr(res_fix, "rowcount") else 0
+          )
+
+        agregar_log(
+            f"🛠️ [CORRECCIÓN DISCREPANCIA] Se actualizaron {filas_corregidas}"
+            " registros para establecer etapa = '2'."
+        )
+        st.success(
+            f"¡Se han actualizado correctamente **{filas_corregidas}**"
+            " registros a la etapa '2'!"
+        )
+        st.rerun()
+      except Exception as e:
+        st.error(f"Error al corregir la discrepancia: {e}")
+
+  st.markdown(
+      "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
+  )
+
+  # ==========================================
   # SECCIÓN: AUDITORÍA DE MEDIDORES DE LA API NO CRUZADOS
   # ==========================================
   with st.container(border=True):
@@ -1009,13 +1099,14 @@ with tab1:
           st.error(f"Error al ejecutar la auditoría de la API: {e}")
 
   # ==========================================
-  # SECCIÓN NUEVA: GESTIÓN Y DETECCIÓN DE DUPLICADOS
+  # SECCIÓN: GESTIÓN Y DETECCIÓN DE DUPLICADOS
   # ==========================================
   with st.container(border=True):
     st.markdown("#### 👥 Detección y Gestión de Registros Duplicados")
     st.markdown(
-        "Detecta registros duplicados en la base de datos `usuarios_miaa_conmedidor`"
-        " evaluando la coincidencia por el campo **Predio_Viv** u otros criterios de unicidad."
+        "Detecta registros duplicados en la base de datos"
+        " `usuarios_miaa_conmedidor` evaluando la coincidencia por el campo"
+        " **Predio_Viv** u otros criterios de unicidad."
     )
 
     col_dup1, col_dup2 = st.columns(2)
@@ -1043,7 +1134,6 @@ with tab1:
     ):
       try:
         engine_pg = obtener_motor_postgres()
-        # Consultar la columna para verificar duplicados en PostgreSQL
         query_check_dup = text(f"""
                     SELECT "{columna_duplicidad}", COUNT(*) as total_duplicados
                     FROM "Usuarios"."usuarios_miaa_conmedidor"
@@ -1058,7 +1148,8 @@ with tab1:
 
         if df_dup_res.empty:
           st.success(
-              f"✨ ¡No se encontraron registros duplicados evaluando por el campo **{columna_duplicidad}**!"
+              f"✨ ¡No se encontraron registros duplicados evaluando por el"
+              f" campo **{columna_duplicidad}**!"
           )
         else:
           total_grupos_dup = len(df_dup_res)
@@ -1066,7 +1157,9 @@ with tab1:
               df_dup_res["total_duplicados"].sum() - total_grupos_dup
           )
           st.warning(
-              f"⚠️ Se detectaron **{total_grupos_dup:,}** valores duplicados (que agrupan un total de **{total_filas_repetidas:,}** registros repetidos) en el campo `{columna_duplicidad}`."
+              f"⚠️ Se detectaron **{total_grupos_dup:,}** valores duplicados"
+              f" (que agrupan un total de **{total_filas_repetidas:,}**"
+              f" registros repetidos) en el campo `{columna_duplicidad}`."
           )
 
           if accion_duplicados == "Ver listado de duplicados":
@@ -1075,10 +1168,11 @@ with tab1:
             )
             st.dataframe(df_dup_res, use_container_width=True, height=300)
 
-            # Cargar los registros completos que forman parte de los duplicados
             lista_valores_dup = df_dup_res[columna_duplicidad].tolist()
             if lista_valores_dup:
-              format_strings = ",".join([f":val_{i}" for i in range(len(lista_valores_dup))])
+              format_strings = ",".join(
+                  [f":val_{i}" for i in range(len(lista_valores_dup))]
+              )
               params = {
                   f"val_{i}": val for i, val in enumerate(lista_valores_dup)
               }
@@ -1095,7 +1189,6 @@ with tab1:
               st.dataframe(df_rows_dup, use_container_width=True, height=350)
 
           else:
-            # Lógica para eliminar duplicados directamente en PostgreSQL conservando el ID o rowid / ctid
             keep_mode = (
                 "MIN(ctid)"
                 if "primero" in accion_duplicados.lower()
@@ -1121,10 +1214,13 @@ with tab1:
               )
 
             agregar_log(
-                f"🗑️ [DUPLICADOS ELIMINADOS] Se eliminaron {filas_eliminadas:,} registros duplicados basándose en '{columna_duplicidad}'."
+                f"🗑️ [DUPLICADOS ELIMINADOS] Se eliminaron"
+                f" {filas_eliminadas:,} registros duplicados basándose en"
+                f" '{columna_duplicidad}'."
             )
             st.success(
-                f"¡Se han eliminado correctamente **{filas_eliminadas:,}** registros duplicados de la tabla!"
+                f"¡Se han eliminado correctamente **{filas_eliminadas:,}**"
+                " registros duplicados de la tabla!"
             )
             st.rerun()
 
@@ -1172,7 +1268,7 @@ with tab3:
   st.markdown(
       "Desde aquí puedes gestionar y actualizar de forma masiva los campos"
       " requeridos de la tabla `medidores_inteligentes` dentro del esquema"
-      " `Medidores` en tu base de datos PostgreSQL[cite: 4]."
+      " `Medidores` en tu base de datos PostgreSQL."
   )
 
   with st.container(border=True):
@@ -1227,9 +1323,6 @@ with tab3:
       "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
   )
 
-  # ==========================================
-  # SECCIÓN: JOIN Y CRUCE DE ETAPA POR PREDIO
-  # ==========================================
   with st.container(border=True):
     st.markdown(
         "#### 🔗 Sincronizar Etapa desde `medidores_inteligentes` hacia"
@@ -1296,9 +1389,6 @@ with tab3:
       "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
   )
 
-  # ==========================================
-  # SECCIÓN DE DIAGNÓSTICO: PREDIOS NO INSERTADOS / NO CRUZADOS
-  # ==========================================
   with st.container(border=True):
     st.markdown("#### 🔍 Diagnóstico de Predios No Insertados / No Cruzados")
     st.markdown(
