@@ -969,7 +969,7 @@ with col_limpieza:
           campos_a_limpiar_masivo.append(campo)
 
     confirmar_masivo = st.checkbox(
-        "⚠️ Confirmo que quiero vaciar masivamente estos campos en TODA la tabla",
+        "⚠️️ Confirmo que quiero vaciar masivamente estos campos en TODA la tabla",
         key="chk_confirmar_masivo",
     )
 
@@ -1160,6 +1160,76 @@ with tab3:
           st.rerun()
         except Exception as e:
           st.error(f"Error al actualizar la tabla medidores_inteligentes: {e}")
+
+  st.markdown(
+      "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
+  )
+
+  # ==========================================
+  # NUEVA SECCIÓN: JOIN Y CRUCE DE ETAPA POR PREDIO
+  # ==========================================
+  with st.container(border=True):
+    st.markdown(
+        "#### 🔗 Sincronizar Etapa desde `medidores_inteligentes` hacia"
+        " `usuarios_miaa_conmedidor`"
+    )
+    st.markdown(
+        "Esta acción realiza un `JOIN` utilizando el campo de predio"
+        " (`Predio_Viv`) para insertar o actualizar el número del campo"
+        " **etapa** desde `medidores_inteligentes` hacia la tabla"
+        ' `"Usuarios"."usuarios_miaa_conmedidor"`.'
+    )
+
+    confirmar_join_etapa = st.checkbox(
+        "⚠️ Confirmo que deseo actualizar el campo etapa en"
+        " `usuarios_miaa_conmedidor` basado en la coincidencia de predio",
+        key="chk_confirmar_join_etapa",
+    )
+
+    if st.button(
+        "Ejecutar Sincronización de Etapa por Predio",
+        type="primary",
+        key="btn_ejecutar_join_etapa",
+        use_container_width=True,
+    ):
+      if not confirmar_join_etapa:
+        st.error(
+            "Debes marcar la casilla de confirmación para ejecutar la"
+            " sincronización."
+        )
+      else:
+        try:
+          engine_pg = obtener_motor_postgres()
+          # Consulta SQL avanzada utilizando UPDATE con FROM (JOIN implícito) en PostgreSQL
+          query_update_join = text("""
+                        UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
+                        SET etapa = m.etapa
+                        FROM "Medidores"."medidores_inteligentes" AS m
+                        WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = TRIM(CAST(m.predio AS TEXT))
+                          AND m.etapa IS NOT NULL
+                    """)
+
+          with engine_pg.connect() as conn_join:
+            resultado_update = conn_join.execute(query_update_join)
+            conn_join.commit()
+            filas_afectadas = (
+                resultado_update.rowcount
+                if hasattr(resultado_update, "rowcount")
+                else "desconocido"
+            )
+
+          agregar_log(
+              "🔗 [JOIN EXITOSO] Se sincronizó el campo 'etapa' desde"
+              " medidores_inteligentes hacia usuarios_miaa_conmedidor por"
+              f" predio. Filas afectadas: {filas_afectadas}"
+          )
+          st.success(
+              f"¡Sincronización por predio completada con éxito! Filas"
+              f" actualizadas: {filas_afectadas}"
+          )
+          st.rerun()
+        except Exception as e:
+          st.error(f"Error al ejecutar la actualización por JOIN: {e}")
 
   st.markdown(
       "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
