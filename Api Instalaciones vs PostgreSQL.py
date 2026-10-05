@@ -165,7 +165,7 @@ def obtener_total_etapa_1():
       )
       return result.scalar() or 0
   except Exception as e:
-    agregar_log(f"⚠️ [AVISO DB] No se pudo obtener el conteo de etapa 1: {e}")
+    agregar_log(f"⚠️️ [AVISO DB] No se pudo obtener el conteo de etapa 1: {e}")
     return 0
 
 
@@ -441,6 +441,11 @@ def ejecutar_sincronizacion_automatica(
                     THEN CAST(s."fechaInstalacion" AS TIMESTAMP WITH TIME ZONE)
                     ELSE u."_Fecha_instalacion"
                 END,
+                "fotoMedidorAnterior" = COALESCE(s."fotoMedidorAnterior", u."fotoMedidorAnterior"),
+                "fotoFachada" = COALESCE(s."fotoFachada", u."fotoFachada"),
+                "fotoMedidorActual" = COALESCE(s."fotoMedidorActual", u."fotoMedidorActual"),
+                "fotocolumpioregistro" = COALESCE(s."fotocolumpioregistro", u."fotocolumpioregistro"),
+                "fotomedidoridvisible" = COALESCE(s."fotomedidoridvisible", u."fotomedidoridvisible"),
                 etapa = '2'
             FROM "Usuarios"."_staging_api_instalaciones" AS s
             WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean"
@@ -774,6 +779,11 @@ with col_limpieza:
         "_Fecha_registro",
         "_Fecha_instalacion",
         "etapa",
+        "fotoMedidorAnterior",
+        "fotoFachada",
+        "fotoMedidorActual",
+        "fotocolumpioregistro",
+        "fotomedidoridvisible",
     ]
 
     campos_a_limpiar_masivo = []
@@ -1250,7 +1260,6 @@ with tab2:
   )
 
 
-  # Descargamos los datos de la API y filtramos para quitar los campos de fotos
   @st.cache_data(ttl=300)
   def cargar_datos_api_con_fotos():
     try:
@@ -1350,7 +1359,6 @@ with tab2:
 
   df_api_full = cargar_datos_api_con_fotos()
   if not df_api_full.empty:
-    # Excluir de la Tabla 2 las columnas que contengan términos de fotos/imágenes
     cols_sin_fotos = [
         c
         for c in df_api_full.columns
