@@ -1245,8 +1245,12 @@ with tab2:
       "<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True
   )
 
-  st.subheader("🌐 Tabla 2: Datos Completos de la API de Instalación")
-  # Descargamos los datos crudos de la API (incluyendo fotos) para esta segunda tabla
+  st.subheader(
+      "🌐 Tabla 2: Datos Completos de la API de Instalación (Sin Fotos)"
+  )
+
+
+  # Descargamos los datos de la API y filtramos para quitar los campos de fotos
   @st.cache_data(ttl=300)
   def cargar_datos_api_con_fotos():
     try:
@@ -1343,9 +1347,19 @@ with tab2:
     except Exception:
       return pd.DataFrame()
 
+
   df_api_full = cargar_datos_api_con_fotos()
   if not df_api_full.empty:
-    st.dataframe(df_api_full, use_container_width=True, height=350)
+    # Excluir de la Tabla 2 las columnas que contengan términos de fotos/imágenes
+    cols_sin_fotos = [
+        c
+        for c in df_api_full.columns
+        if not any(
+            term in c.lower() for term in ["foto", "imagen", "img", "fotografia"]
+        )
+    ]
+    df_api_sin_fotos = df_api_full[cols_sin_fotos]
+    st.dataframe(df_api_sin_fotos, use_container_width=True, height=350)
   else:
     st.warning("No hay datos cargados desde la API.")
 
@@ -1357,7 +1371,6 @@ with tab2:
       "📸 Tabla 3: Cliente, Predio_Viv y Campos de Fotos Disponibles (API)"
   )
   if not df_api_full.empty:
-    # Identificar columnas que contengan términos de fotos/imágenes
     cols_fotos = [
         c
         for c in df_api_full.columns
@@ -1366,7 +1379,6 @@ with tab2:
         )
     ]
 
-    # Seleccionar exclusivamente Cliente, Predio_Viv y las columnas de fotos encontradas
     cols_a_mostrar_t3 = []
     if "Cliente" in df_api_full.columns:
       cols_a_mostrar_t3.append("Cliente")
@@ -1375,7 +1387,6 @@ with tab2:
 
     cols_a_mostrar_t3.extend(cols_fotos)
 
-    # Filtrar el DataFrame para la tercera tabla
     df_t3_fotos = df_api_full[
         [c for c in cols_a_mostrar_t3 if c in df_api_full.columns]
     ]
