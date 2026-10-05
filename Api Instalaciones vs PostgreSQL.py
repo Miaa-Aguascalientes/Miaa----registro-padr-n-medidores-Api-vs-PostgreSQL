@@ -264,15 +264,7 @@ def cargar_datos_api():
             elif "numCliente" in df.columns:
               df["Cliente"] = df["numCliente"]
 
-            cols_a_remover = [
-                c
-                for c in df.columns
-                if any(
-                    term in c.lower()
-                    for term in ["foto", "imagen", "img", "fotografia"]
-                )
-            ]
-            df = df.drop(columns=cols_a_remover, errors="ignore")
+            # NOTA: Mantenemos todas las columnas de fotos/imágenes intactas para mostrarlas en la tabla.
 
             col_api_predio = next(
                 (
@@ -901,7 +893,7 @@ with tab1:
   )
 
   # ==========================================
-  # SECCIÓN NUEVA: AUDITORÍA DE DISCREPANCIA (SERIE LLENA VS ETAPA 2)
+  # SECCIÓN: AUDITORÍA DE DISCREPANCIA (SERIE LLENA VS ETAPA 2)
   # ==========================================
   with st.container(border=True):
     st.markdown(
@@ -1256,7 +1248,8 @@ with tab2:
   )
 
   st.subheader(
-      "🌐 Tabla: Datos de la API de Instalación (Todos los registros)"
+      "🌐 Tabla: Datos de la API de Instalación (Incluyendo Fichas e"
+      " Imágenes/Fotos)"
   )
   if not df_filtrado.empty:
     st.dataframe(df_filtrado, use_container_width=True, height=350)
