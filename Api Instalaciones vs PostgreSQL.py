@@ -264,8 +264,6 @@ def cargar_datos_api():
             elif "numCliente" in df.columns:
               df["Cliente"] = df["numCliente"]
 
-            # NOTA: Mantenemos todas las columnas de fotos/imágenes intactas para mostrarlas en la tabla.
-
             col_api_predio = next(
                 (
                     c
@@ -893,7 +891,7 @@ with tab1:
   )
 
   # ==========================================
-  # SECCIÓN: AUDITORÍA DE DISCREPANCIA (SERIE LLENA VS ETAPA 2)
+  # SECCIÓN NUEVA: AUDITORÍA DE DISCREPANCIA (SERIE LLENA VS ETAPA 2)
   # ==========================================
   with st.container(border=True):
     st.markdown(
@@ -1223,7 +1221,7 @@ with tab1:
 
 with tab2:
   st.subheader(
-      "🚰 Tabla: usuarios_miaa_conmedidor (PostgreSQL - Bloques SQL)"
+      "🚰 Tabla 1: usuarios_miaa_conmedidor (PostgreSQL - Bloques SQL)"
   )
   if total_registros_db > 0:
     t2_filas = 50
@@ -1244,242 +1242,61 @@ with tab2:
     st.warning("No hay datos cargados de PostgreSQL.")
 
   st.markdown(
-      "<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True
+      "<div style='margin-bottom: 20px;'></div>", unsafe_allow_html=True
   )
 
-  st.subheader(
-      "🌐 Tabla: Datos de la API de Instalación (Incluyendo Fichas e"
-      " Imágenes/Fotos)"
-  )
-  if not df_filtrado.empty:
-    st.dataframe(df_filtrado, use_container_width=True, height=350)
-  else:
-    st.warning("No hay datos cargados desde la API.")
-
-with tab3:
-  st.subheader("🛠 Gestión de la tabla: medidores_inteligentes")
-  st.markdown(
-      "Desde aquí puedes gestionar y actualizar de forma masiva los campos"
-      " requeridos de la tabla `medidores_inteligentes` dentro del esquema"
-      " `Medidores` en tu base de datos PostgreSQL."
-  )
-
-  with st.container(border=True):
-    st.markdown("#### 🔢 Asignar Etapa 1 a todos los registros")
-    st.markdown(
-        "Esta acción actualizará el campo **etapa** con el valor **1** en"
-        " absolutamente todos los registros de la tabla"
-        " `medidores_inteligentes`."
-    )
-
-    confirmar_etapa = st.checkbox(
-        "⚠️ Confirmo que deseo actualizar el campo etapa a 1 para todos los"
-        " registros de medidores_inteligentes",
-        key="chk_confirmar_etapa_1",
-    )
-
-    if st.button(
-        "Establecer etapa = 1 en toda la tabla",
-        type="primary",
-        key="btn_ejecutar_etapa_1",
-        use_container_width=True,
-    ):
-      if not confirmar_etapa:
-        st.error(
-            "Debes marcar la casilla de confirmación para ejecutar esta"
-            " actualización masiva."
+  st.subheader("🌐 Tabla 2: Datos Completos de la API de Instalación")
+  # Descargamos los datos crudos de la API (incluyendo fotos) para esta segunda tabla
+  @st.cache_data(ttl=300)
+  def cargar_datos_api_con_fotos():
+    try:
+      usuario = st.secrets["api"]["usuario"]
+      password = st.secrets["api"]["password"]
+      res_login = requests.post(
+          url_login,
+          json={"username": usuario, "password": password},
+          headers={"Content-Type": "application/json"},
+      )
+      if res_login.status_code == 200:
+        token = res_login.json().get("token") or res_login.json().get(
+            "access_token"
         )
-      else:
-        try:
-          engine_pg = obtener_motor_postgres()
-          query_update_etapa = text(
-              'UPDATE "Medidores"."medidores_inteligentes" SET etapa = \'1\''
+        if token:
+          res_inst = requests.get(
+              url_instalaciones,
+              headers={
+                  "Content-Type": "application/json",
+                  "Authorization": f"Bearer {token}",
+              },
           )
+          if res_inst.status_code == 200:
+            data = res_inst.json()
+            if isinstance(data, list):
+              df = pd.DataFrame(data)
+            elif isinstance(data, dict):
+              df = pd.DataFrame()
+              for key in ["data", "result", "items", "instalaciones"]:
+                if key in data and isinstance(data[key], list):
+                  df = pd.DataFrame(data[key])
+                  break
+              if df.empty:
+                df = pd.DataFrame([data])
 
-          with engine_pg.connect() as conn_etapa:
-            conn_etapa.execute(query_update_etapa)
-            conn_etapa.commit()
+            if not df.empty:
+              if "numeroCliente" in df.columns:
+                df["Cliente"] = df["numeroCliente"]
+              elif "numero_cliente" in df.columns:
+                df["Cliente"] = df["numero_cliente"]
+              elif "numCliente" in df.columns:
+                df["Cliente"] = df["numCliente"]
 
-          agregar_log(
-              "⚡ [DB UPDATE] Se actualizó exitosamente el campo 'etapa' a '1'"
-              " en todos los registros de Medidores.medidores_inteligentes."
-          )
-          st.success(
-              "¡Se han actualizado correctamente todos los registros con la"
-              " etapa 1!"
-          )
-          st.rerun()
-        except Exception as e:
-          st.error(f"Error al actualizar la tabla medidores_inteligentes: {e}")
-
-  st.markdown(
-      "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
-  )
-
-  with st.container(border=True):
-    st.markdown(
-        "#### 🔗 Sincronizar Etapa desde `medidores_inteligentes` hacia"
-        " `usuarios_miaa_conmedidor`"
-    )
-    st.markdown(
-        "Esta acción realiza un `JOIN` utilizando el campo de predio"
-        " (`Predio_Viv`) para insertar o actualizar el número del campo"
-        " **etapa** desde `medidores_inteligentes` hacia la tabla"
-        ' `"Usuarios"."usuarios_miaa_conmedidor"`.'
-    )
-
-    confirmar_join_etapa = st.checkbox(
-        "⚠ Confirmo que deseo actualizar el campo etapa en"
-        " `usuarios_miaa_conmedidor` basado en la coincidencia de predio",
-        key="chk_confirmar_join_etapa",
-    )
-
-    if st.button(
-        "Ejecutar Sincronización de Etapa por Predio",
-        type="primary",
-        key="btn_ejecutar_join_etapa",
-        use_container_width=True,
-    ):
-      if not confirmar_join_etapa:
-        st.error(
-            "Debes marcar la casilla de confirmación para ejecutar la"
-            " sincronización."
-        )
-      else:
-        try:
-          engine_pg = obtener_motor_postgres()
-          query_update_join = text("""
-                        UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
-                        SET etapa = m.etapa
-                        FROM "Medidores"."medidores_inteligentes" AS m
-                        WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = TRIM(CAST(m.predio AS TEXT))
-                          AND m.etapa IS NOT NULL
-                    """)
-
-          with engine_pg.connect() as conn_join:
-            resultado_update = conn_join.execute(query_update_join)
-            conn_join.commit()
-            filas_afectadas = (
-                resultado_update.rowcount
-                if hasattr(resultado_update, "rowcount")
-                else "desconocido"
-            )
-
-          agregar_log(
-              "🔗 [JOIN EXITOSO] Se sincronizó el campo 'etapa' desde"
-              " medidores_inteligentes hacia usuarios_miaa_conmedidor por"
-              f" predio. Filas afectadas: {filas_afectadas}"
-          )
-          st.success(
-              f"¡Sincronización por predio completada con éxito! Filas"
-              f" actualizadas: {filas_afectadas}"
-          )
-          st.rerun()
-        except Exception as e:
-          st.error(f"Error al ejecutar la actualización por JOIN: {e}")
-
-  st.markdown(
-      "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
-  )
-
-  with st.container(border=True):
-    st.markdown("#### 🔍 Diagnóstico de Predios No Insertados / No Cruzados")
-    st.markdown(
-        "Identifica qué registros de `medidores_inteligentes` **no encontraron"
-        " coincidencia** en `usuarios_miaa_conmedidor` y descubre la razón"
-        " exacta por la que no se insertaron (por ejemplo: predio nulo,"
-        " vacío, espacios en blanco o inexistente en la tabla destino)."
-    )
-
-    if st.button(
-        "Analizar Predios No Cruzados (Auditoría)",
-        key="btn_auditar_predios",
-        use_container_width=True,
-    ):
-      try:
-        engine_pg = obtener_motor_postgres()
-        query_no_cruzados = text("""
-                    SELECT m.* 
-                    FROM "Medidores"."medidores_inteligentes" AS m
-                    WHERE NOT EXISTS (
-                        SELECT 1 
-                        FROM "Usuarios"."usuarios_miaa_conmedidor" AS u
-                        WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = TRIM(CAST(m.predio AS TEXT))
-                    )
-                """)
-        df_no_cruzados = pd.read_sql(query_no_cruzados, con=engine_pg)
-
-        if df_no_cruzados.empty:
-          st.success(
-              "¡Excelente! Todos los registros de `medidores_inteligentes`"
-              " tienen un predio válido que coincide en"
-              " `usuarios_miaa_conmedidor`."
-          )
-        else:
-          st.warning(
-              f"Se encontraron **{len(df_no_cruzados):,}** registros en"
-              " `medidores_inteligentes` que NO pudieron cruzarse."
-          )
-
-          def clasificar_motivo(row):
-            p = row.get("predio")
-            if pd.isna(p):
-              return "Predio Nulo (NULL en base de datos)"
-            p_str = str(p).strip()
-            if p_str == "" or p_str.lower() in ["none", "nan", "null", "0"]:
-              return "Predio Vacío, Cero o Inválido"
-            return "Predio no existe en la tabla usuarios_miaa_conmedidor"
-
-          df_no_cruzados["Motivo_No_Insercion"] = df_no_cruzados.apply(
-              clasificar_motivo, axis=1
-          )
-
-          st.markdown(
-              "##### 📊 Resumen de Motivos por los que no se cruzaron:"
-          )
-          conteo_motivos = df_no_cruzados["Motivo_No_Insercion"].value_counts()
-          st.dataframe(conteo_motivos, use_container_width=True)
-
-          st.markdown(
-              "##### 📋 Listado Detallado de Registros No Cruzados:"
-          )
-          st.dataframe(df_no_cruzados, use_container_width=True, height=350)
-      except Exception as e:
-        st.error(f"Error al realizar el diagnóstico de predios: {e}")
-
-  st.markdown(
-      "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
-  )
-  st.markdown("#### 👁️ Vista previa de registros: `medidores_inteligentes`")
-
-  try:
-    engine_pg = obtener_motor_postgres()
-    with engine_pg.connect() as conn_count:
-      res_cnt = conn_count.execute(
-          text('SELECT COUNT(*) FROM "Medidores"."medidores_inteligentes"')
-      )
-      total_mi = res_cnt.scalar() or 0
-
-    if total_mi > 0:
-      t3_filas = 50
-      t3_total_pags = max(
-          1,
-          (total_mi // t3_filas)
-          + (1 if total_mi % t3_filas > 0 else 0),
-      )
-      t3_pag = st.selectbox(
-          "Seleccionar página (medidores_inteligentes)",
-          range(1, t3_total_pags + 1),
-          key="select_pag_t3",
-      )
-      t3_off = (t3_pag - 1) * t3_filas
-      df_t3 = cargar_pagina_medidores_inteligentes(
-          limit=t3_filas, offset=t3_off
-      )
-      st.dataframe(df_t3, use_container_width=True, height=400)
-    else:
-      st.warning("La tabla `medidores_inteligentes` está actualmente vacía.")
-  except Exception as e:
-    st.warning(
-        f"No se pudo cargar la vista previa de `medidores_inteligentes`: {e}"
-    )
+              col_api_predio = next(
+                  (
+                      c
+                      for c in [
+                          "predio",
+                          "predioViv",
+                          "predio_viv",
+                          "numeroPredio",
+                      ]
+                      if c in df.columns
