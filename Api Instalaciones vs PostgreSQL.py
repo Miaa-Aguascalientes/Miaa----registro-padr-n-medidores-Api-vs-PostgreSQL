@@ -1204,7 +1204,7 @@ with tab1:
               )
 
             agregar_log(
-                f"🗑️ [DUPLICADOS ELIMINADOS] Se eliminaron"
+                f"🗑️️ [DUPLICADOS ELIMINADOS] Se eliminaron"
                 f" {filas_eliminadas:,} registros duplicados basándose en"
                 f" '{columna_duplicidad}'."
             )
@@ -1248,7 +1248,6 @@ with tab2:
   st.subheader("🌐 Tabla 2: Datos Completos de la API de Instalación")
 
 
-  # Descargamos los datos crudos de la API y filtramos para quitar campos de fotos
   @st.cache_data(ttl=300)
   def cargar_datos_api_sin_fotos():
     try:
@@ -1340,7 +1339,6 @@ with tab2:
 
                 df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-              # Filtrar y eliminar columnas que contengan términos de fotos/imágenes
               cols_fotos_a_excluir = [
                   c
                   for c in df.columns
@@ -1436,7 +1434,7 @@ with tab3:
     )
 
     confirmar_join_etapa = st.checkbox(
-        "⚠ Confirmo que deseo actualizar el campo etapa en"
+        "⚠️ Confirmo que deseo actualizar el campo etapa en"
         " `usuarios_miaa_conmedidor` basado en la coincidencia de predio",
         key="chk_confirmar_join_etapa",
     )
