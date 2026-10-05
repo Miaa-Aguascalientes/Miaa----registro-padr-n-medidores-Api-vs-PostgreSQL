@@ -165,7 +165,7 @@ def obtener_total_etapa_1():
       )
       return result.scalar() or 0
   except Exception as e:
-    agregar_log(f"⚠️️ [AVISO DB] No se pudo obtener el conteo de etapa 1: {e}")
+    agregar_log(f"⚠️ [AVISO DB] No se pudo obtener el conteo de etapa 1: {e}")
     return 0
 
 
@@ -182,7 +182,7 @@ def obtener_total_etapa_2():
       )
       return result.scalar() or 0
   except Exception as e:
-    agregar_log(f"⚠️ [AVISO DB] No se pudo obtener el conteo de etapa 2: {e}")
+    agregar_log(f"⚠️️ [AVISO DB] No se pudo obtener el conteo de etapa 2: {e}")
     return 0
 
 
@@ -307,6 +307,33 @@ def cargar_datos_api():
                 return f"{p_str}-{u_str}"
 
               df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
+
+            # Normalización y mapeo robusto de campos de fotos por si vienen en minúsculas o sin formato exacto
+            mapa_fotos_api = {
+                "fotomedidoranterior": "fotoMedidorAnterior",
+                "fotofachada": "fotoFachada",
+                "fotomedidoractual": "fotoMedidorActual",
+                "fotocolumpioregistro": "fotocolumpioregistro",
+                "fotomedidoridvisible": "fotomedidoridvisible",
+            }
+
+            for col_actual in df.columns:
+              col_lower = col_actual.lower()
+              if col_lower in mapa_fotos_api:
+                nombre_correcto = mapa_fotos_api[col_lower]
+                if col_actual != nombre_correcto:
+                  df[nombre_correcto] = df[col_actual]
+
+            # Garantizar que las columnas de fotos existan en el DataFrame aunque la API no las mande en algún registro
+            for col_foto_req in [
+                "fotoMedidorAnterior",
+                "fotoFachada",
+                "fotoMedidorActual",
+                "fotocolumpioregistro",
+                "fotomedidoridvisible",
+            ]:
+              if col_foto_req not in df.columns:
+                df[col_foto_req] = None
 
             columnas_a_quitar = [
                 "predio",
@@ -980,7 +1007,7 @@ with tab1:
         )
         st.success(
             f"¡Se han actualizado correctamente **{filas_corregidas}**"
-            " registros a la etapa '2'!"
+            " registros al etapa '2'!"
         )
         st.rerun()
       except Exception as e:
@@ -1487,7 +1514,7 @@ with tab3:
     )
 
     confirmar_join_etapa = st.checkbox(
-        "⚠ Confirmo que deseo actualizar el campo etapa en"
+        "⚠️️ Confirmo que deseo actualizar el campo etapa en"
         " `usuarios_miaa_conmedidor` basado en la coincidencia de predio",
         key="chk_confirmar_join_etapa",
     )
