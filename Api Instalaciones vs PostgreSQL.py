@@ -231,7 +231,7 @@ URL_INSTALACIONES = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones
 
 @st.cache_data(ttl=300)
 def cargar_datos_api():
-    """Conecta con la API de MIAA, procesa la respuesta y devuelve un DataFrame limpio."""
+    """Conecta con la API de MIAA, procesa la respuesta, construye columnas combinadas y devuelve un DataFrame limpio."""
     try:
         # 1. Obtener credenciales de los secretos
         usuario = st.secrets["api"]["usuario"]
@@ -253,7 +253,7 @@ def cargar_datos_api():
                 f"Error de Autenticación (HTTP {res_login.status_code}):"
                 f" {res_login.text[:150]}"
             )
-            return pd.DataFrame()  # Retorna DataFrame vacío en vez de romper
+            return pd.DataFrame()
 
         data_login = res_login.json()
         token = data_login.get("token") or data_login.get("access_token")
@@ -293,7 +293,7 @@ def cargar_datos_api():
             if df.empty:
                 df = pd.DataFrame([data])
 
-        # 5. Mapeo y normalización de columnas
+        # 5. Mapeo, normalización y limpieza de columnas
         if not df.empty:
             # Normalizar número de cliente
             if "numeroCliente" in df.columns:
@@ -303,7 +303,7 @@ def cargar_datos_api():
             elif "numCliente" in df.columns:
                 df["Cliente"] = df["numCliente"]
 
-            # Buscar y normalizar columna de predio
+            # Buscar columnas de predio y unidad para construir Predio_Viv
             col_api_predio = next(
                 (
                     c
@@ -317,27 +317,18 @@ def cargar_datos_api():
                 ),
                 None,
             )
-            if col_api_predio:
-                df["Predio"] = df[col_api_predio]
-
-            # Buscar y normalizar columna de unidad
             col_api_unidad = next(
                 (c for c in ["unidad", "unidadViv", "unidad_viv"] if c in df.columns),
                 None,
             )
-            if col_api_unidad:
-                df["Unidad"] = df[col_api_unidad]
 
-        return df
-
-    except Exception as e:
-        st.error(f"Excepción crítica al conectar con la API: {e}")
-        return pd.DataFrame()
-
-              def construir_predio_viv(row):
+            # Función para construir Predio_Viv de forma segura
+            def construir_predio_viv(row):
+                if not col_api_predio:
+                    return ""
                 p = row[col_api_predio]
                 if pd.isna(p) or str(p).strip().lower() in ["none", "nan", ""]:
-                  return ""
+                    return ""
 
                 p_str = str(p).strip()
                 u = (
@@ -348,13 +339,13 @@ def cargar_datos_api():
                 u_str = str(u).strip()
 
                 if u_str.lower() in ["none", "nan", ""]:
-                  u_str = "0"
+                    u_str = "0"
 
                 return f"{p_str}-{u_str}"
 
-              df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
+            df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-            # Normalización y mapeo robusto de campos de fotos por si vienen en minúsculas o sin formato exacto
+            # Normalización de campos de fotos
             mapa_fotos_api = {
                 "fotomedidoranterior": "fotoMedidorAnterior",
                 "fotofachada": "fotoFachada",
@@ -364,13 +355,13 @@ def cargar_datos_api():
             }
 
             for col_actual in df.columns:
-              col_lower = col_actual.lower()
-              if col_lower in mapa_fotos_api:
-                nombre_correcto = mapa_fotos_api[col_lower]
-                if col_actual != nombre_correcto:
-                  df[nombre_correcto] = df[col_actual]
+                col_lower = col_actual.lower()
+                if col_lower in mapa_fotos_api:
+                    nombre_correcto = mapa_fotos_api[col_lower]
+                    if col_actual != nombre_correcto:
+                        df[nombre_correcto] = df[col_actual]
 
-            # Garantizar que las columnas de fotos existan en el DataFrame aunque la API no las mande en algún registro
+            # Garantizar que existan las columnas de fotos requeridas
             for col_foto_req in [
                 "fotoMedidorAnterior",
                 "fotoFachada",
@@ -378,9 +369,10 @@ def cargar_datos_api():
                 "fotocolumpioregistro",
                 "fotomedidoridvisible",
             ]:
-              if col_foto_req not in df.columns:
-                df[col_foto_req] = None
+                if col_foto_req not in df.columns:
+                    df[col_foto_req] = None
 
+            # Limpiar columnas intermedias que ya fueron normalizadas
             columnas_a_quitar = [
                 "predio",
                 "predioViv",
@@ -396,16 +388,18 @@ def cargar_datos_api():
             ]
             df = df.drop(columns=columnas_a_quitar, errors="ignore")
 
+            # Reordenar columnas prioritarias al inicio
             cols_prioritarias = [
                 c for c in ["Cliente", "Predio_Viv"] if c in df.columns
             ]
             otras_cols = [c for c in df.columns if c not in cols_prioritarias]
             df = df[cols_prioritarias + otras_cols]
 
-          return df
-    return pd.DataFrame()
-  except Exception:
-    return pd.DataFrame()
+        return df
+
+    except Exception as e:
+        st.error(f"Excepción crítica al conectar con la API: {e}")
+        return pd.DataFrame()
 
 
 # ==========================================
