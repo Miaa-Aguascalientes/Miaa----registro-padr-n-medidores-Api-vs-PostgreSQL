@@ -183,7 +183,7 @@ def obtener_total_etapa_2():
       )
       return result.scalar() or 0
   except Exception as e:
-    agregar_log(f"⚠️️ [AVISO DB] No se pudo obtener el conteo de etapa 2: {e}")
+    agregar_log(f"⚠️ [AVISO DB] No se pudo obtener el conteo de etapa 2: {e}")
     return 0
 
 
@@ -222,8 +222,6 @@ def cargar_pagina_medidores_inteligentes(limit=50, offset=0):
     return pd.DataFrame()
 
 
-
-
 BASE_URL = "https://prelec.miaa.mx"
 URL_LOGIN_CORRECTA = "/auth/login"
 URL_INSTALACIONES = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones"
@@ -231,175 +229,173 @@ URL_INSTALACIONES = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones
 
 @st.cache_data(ttl=300)
 def cargar_datos_api():
-    """Conecta con la API de MIAA, procesa la respuesta, construye columnas combinadas y devuelve un DataFrame limpio."""
-    try:
-        # 1. Obtener credenciales de los secretos
-        usuario = st.secrets["api"]["usuario"]
-        password = st.secrets["api"]["password"]
+  """Conecta con la API de MIAA, procesa la respuesta, construye columnas combinadas y devuelve un DataFrame limpio."""
+  try:
+    # 1. Obtener credenciales de los secretos
+    usuario = st.secrets["api"]["usuario"]
+    password = st.secrets["api"]["password"]
 
-        # Definir correctamente la URL de login usando las constantes
-        url_login = BASE_URL + URL_LOGIN_CORRECTA
+    # Definir correctamente la URL de login usando las constantes
+    url_login = BASE_URL + URL_LOGIN_CORRECTA
 
-        # 2. Petición de autenticación
-        res_login = requests.post(
-            url_login,
-            json={"username": usuario, "password": password},
-            headers={"Content-Type": "application/json"},
-            timeout=15,
+    # 2. Petición de autenticación
+    res_login = requests.post(
+        url_login,
+        json={"username": usuario, "password": password},
+        headers={"Content-Type": "application/json"},
+        timeout=15,
+    )
+
+    if res_login.status_code != 200:
+      st.error(
+          f"Error de Autenticación (HTTP {res_login.status_code}):"
+          f" {res_login.text[:150]}"
+      )
+      return pd.DataFrame()
+
+    data_login = res_login.json()
+    token = data_login.get("token") or data_login.get("access_token")
+
+    if not token:
+      st.error("Login exitoso (200) pero no se encontró la clave del token.")
+      return pd.DataFrame()
+
+    # 3. Petición de instalaciones usando el token Bearer
+    res_inst = requests.get(
+        URL_INSTALACIONES,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        timeout=45,
+    )
+
+    if res_inst.status_code != 200:
+      st.error(
+          f"Error al consultar instalaciones (HTTP"
+          f" {res_inst.status_code}): {res_inst.text[:150]}"
+      )
+      return pd.DataFrame()
+
+    # 4. Procesamiento de datos JSON a DataFrame
+    data = res_inst.json()
+    df = pd.DataFrame()
+
+    if isinstance(data, list):
+      df = pd.DataFrame(data)
+    elif isinstance(data, dict):
+      for key in ["data", "result", "items", "instalaciones"]:
+        if key in data and isinstance(data[key], list):
+          df = pd.DataFrame(data[key])
+          break
+      if df.empty:
+        df = pd.DataFrame([data])
+
+    # 5. Mapeo, normalización y limpieza de columnas
+    if not df.empty:
+      # Normalizar número de cliente
+      if "numeroCliente" in df.columns:
+        df["Cliente"] = df["numeroCliente"]
+      elif "numero_cliente" in df.columns:
+        df["Cliente"] = df["numero_cliente"]
+      elif "numCliente" in df.columns:
+        df["Cliente"] = df["numCliente"]
+
+      # Buscar columnas de predio y unidad para construir Predio_Viv
+      col_api_predio = next(
+          (
+              c
+              for c in [
+                  "predio",
+                  "predioViv",
+                  "predio_viv",
+                  "numeroPredio",
+              ]
+              if c in df.columns
+          ),
+          None,
+      )
+      col_api_unidad = next(
+          (c for c in ["unidad", "unidadViv", "unidad_viv"] if c in df.columns),
+          None,
+      )
+
+      # Función para construir Predio_Viv de forma segura
+      def construir_predio_viv(row):
+        if not col_api_predio:
+          return ""
+        p = row[col_api_predio]
+        if pd.isna(p) or str(p).strip().lower() in ["none", "nan", ""]:
+          return ""
+
+        p_str = str(p).strip()
+        u = (
+            row[col_api_unidad]
+            if col_api_unidad and pd.notna(row[col_api_unidad])
+            else 0
         )
+        u_str = str(u).strip()
 
-        if res_login.status_code != 200:
-            st.error(
-                f"Error de Autenticación (HTTP {res_login.status_code}):"
-                f" {res_login.text[:150]}"
-            )
-            return pd.DataFrame()
+        if u_str.lower() in ["none", "nan", ""]:
+          u_str = "0"
 
-        data_login = res_login.json()
-        token = data_login.get("token") or data_login.get("access_token")
+        return f"{p_str}-{u_str}"
 
-        if not token:
-            st.error("Login exitoso (200) pero no se encontró la clave del token.")
-            return pd.DataFrame()
+      df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
 
-        # 3. Petición de instalaciones usando el token Bearer
-        res_inst = requests.get(
-            URL_INSTALACIONES,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-            timeout=45,
-        )
+      # Normalización de campos de fotos
+      mapa_fotos_api = {
+          "fotomedidoranterior": "fotoMedidorAnterior",
+          "fotofachada": "fotoFachada",
+          "fotomedidoractual": "fotoMedidorActual",
+          "fotocolumpioregistro": "fotocolumpioregistro",
+          "fotomedidoridvisible": "fotomedidoridvisible",
+      }
 
-        if res_inst.status_code != 200:
-            st.error(
-                f"Error al consultar instalaciones (HTTP"
-                f" {res_inst.status_code}): {res_inst.text[:150]}"
-            )
-            return pd.DataFrame()
+      for col_actual in df.columns:
+        col_lower = col_actual.lower()
+        if col_lower in mapa_fotos_api:
+          nombre_correcto = mapa_fotos_api[col_lower]
+          if col_actual != nombre_correcto:
+            df[nombre_correcto] = df[col_actual]
 
-        # 4. Procesamiento de datos JSON a DataFrame
-        data = res_inst.json()
-        df = pd.DataFrame()
+      # Garantizar que existan las columnas de fotos requeridas
+      for col_foto_req in [
+          "fotoMedidorAnterior",
+          "fotoFachada",
+          "fotoMedidorActual",
+          "fotocolumpioregistro",
+          "fotomedidoridvisible",
+      ]:
+        if col_foto_req not in df.columns:
+          df[col_foto_req] = None
 
-        if isinstance(data, list):
-            df = pd.DataFrame(data)
-        elif isinstance(data, dict):
-            for key in ["data", "result", "items", "instalaciones"]:
-                if key in data and isinstance(data[key], list):
-                    df = pd.DataFrame(data[key])
-                    break
-            if df.empty:
-                df = pd.DataFrame([data])
+      # Limpiar columnas intermedias que ya fueron normalizadas
+      columnas_a_quitar = [
+          "predio",
+          "predioViv",
+          "predio_viv",
+          "numeroPredio",
+          "unidad",
+          "unidadViv",
+          "unidad_viv",
+          "uuid",
+          "numeroCliente",
+          "numero_cliente",
+          "numCliente",
+      ]
+      df = df.drop(columns=columnas_a_quitar, errors="ignore")
 
-        # 5. Mapeo, normalización y limpieza de columnas
-        if not df.empty:
-            # Normalizar número de cliente
-            if "numeroCliente" in df.columns:
-                df["Cliente"] = df["numeroCliente"]
-            elif "numero_cliente" in df.columns:
-                df["Cliente"] = df["numero_cliente"]
-            elif "numCliente" in df.columns:
-                df["Cliente"] = df["numCliente"]
+      # Reordenar columnas prioritarias al inicio
+      cols_prioritarias = [c for c in ["Cliente", "Predio_Viv"] if c in df.columns]
+      otras_cols = [c for c in df.columns if c not in cols_prioritarias]
+      df = df[cols_prioritarias + otras_cols]
 
-            # Buscar columnas de predio y unidad para construir Predio_Viv
-            col_api_predio = next(
-                (
-                    c
-                    for c in [
-                        "predio",
-                        "predioViv",
-                        "predio_viv",
-                        "numeroPredio",
-                    ]
-                    if c in df.columns
-                ),
-                None,
-            )
-            col_api_unidad = next(
-                (c for c in ["unidad", "unidadViv", "unidad_viv"] if c in df.columns),
-                None,
-            )
+    return df
 
-            # Función para construir Predio_Viv de forma segura
-            def construir_predio_viv(row):
-                if not col_api_predio:
-                    return ""
-                p = row[col_api_predio]
-                if pd.isna(p) or str(p).strip().lower() in ["none", "nan", ""]:
-                    return ""
-
-                p_str = str(p).strip()
-                u = (
-                    row[col_api_unidad]
-                    if col_api_unidad and pd.notna(row[col_api_unidad])
-                    else 0
-                )
-                u_str = str(u).strip()
-
-                if u_str.lower() in ["none", "nan", ""]:
-                    u_str = "0"
-
-                return f"{p_str}-{u_str}"
-
-            df["Predio_Viv"] = df.apply(construir_predio_viv, axis=1)
-
-            # Normalización de campos de fotos
-            mapa_fotos_api = {
-                "fotomedidoranterior": "fotoMedidorAnterior",
-                "fotofachada": "fotoFachada",
-                "fotomedidoractual": "fotoMedidorActual",
-                "fotocolumpioregistro": "fotocolumpioregistro",
-                "fotomedidoridvisible": "fotomedidoridvisible",
-            }
-
-            for col_actual in df.columns:
-                col_lower = col_actual.lower()
-                if col_lower in mapa_fotos_api:
-                    nombre_correcto = mapa_fotos_api[col_lower]
-                    if col_actual != nombre_correcto:
-                        df[nombre_correcto] = df[col_actual]
-
-            # Garantizar que existan las columnas de fotos requeridas
-            for col_foto_req in [
-                "fotoMedidorAnterior",
-                "fotoFachada",
-                "fotoMedidorActual",
-                "fotocolumpioregistro",
-                "fotomedidoridvisible",
-            ]:
-                if col_foto_req not in df.columns:
-                    df[col_foto_req] = None
-
-            # Limpiar columnas intermedias que ya fueron normalizadas
-            columnas_a_quitar = [
-                "predio",
-                "predioViv",
-                "predio_viv",
-                "numeroPredio",
-                "unidad",
-                "unidadViv",
-                "unidad_viv",
-                "uuid",
-                "numeroCliente",
-                "numero_cliente",
-                "numCliente",
-            ]
-            df = df.drop(columns=columnas_a_quitar, errors="ignore")
-
-            # Reordenar columnas prioritarias al inicio
-            cols_prioritarias = [
-                c for c in ["Cliente", "Predio_Viv"] if c in df.columns
-            ]
-            otras_cols = [c for c in df.columns if c not in cols_prioritarias]
-            df = df[cols_prioritarias + otras_cols]
-
-        return df
-
-    except Exception as e:
-        st.error(f"Excepción crítica al conectar con la API: {e}")
-        return pd.DataFrame()
+  except Exception as e:
+    st.error(f"Excepción crítica al conectar con la API: {e}")
+    return pd.DataFrame()
 
 
 # ==========================================
@@ -508,6 +504,7 @@ def ejecutar_sincronizacion_automatica(
                     THEN CAST(s."fechaInstalacion" AS TIMESTAMP WITH TIME ZONE)
                     ELSE u."_Fecha_instalacion"
                 END,
+                "_Ultima_actualizacion" = :tiempo_actual,
                 "fotoMedidorAnterior" = COALESCE(s."fotoMedidorAnterior", u."fotoMedidorAnterior"),
                 "fotoFachada" = COALESCE(s."fotoFachada", u."fotoFachada"),
                 "fotoMedidorActual" = COALESCE(s."fotoMedidorActual", u."fotoMedidorActual"),
@@ -520,7 +517,10 @@ def ejecutar_sincronizacion_automatica(
         """)
 
     with engine_pg.connect() as conn:
-      result_up = conn.execute(query_update_masivo)
+      result_up = conn.execute(
+          query_update_masivo,
+          {"tiempo_actual": datetime.now(ZONA_MEXICO)},
+      )
       conn.commit()
       filas_actualizadas = (
           result_up.rowcount if hasattr(result_up, "rowcount") else 0
@@ -845,6 +845,7 @@ with col_limpieza:
         "_Lectura_actual",
         "_Fecha_registro",
         "_Fecha_instalacion",
+        "_Ultima_actualizacion",
         "etapa",
         "fotoMedidorAnterior",
         "fotoFachada",
@@ -1042,7 +1043,7 @@ with tab1:
           )
 
         agregar_log(
-            f"🛠️ [CORRECCIÓN DISCREPANCIA] Se actualizaron {filas_corregidas}"
+            f"🛠️️ [CORRECCIÓN DISCREPANCIA] Se actualizaron {filas_corregidas}"
             " registros para establecer etapa = '2'."
         )
         st.success(
@@ -1554,7 +1555,7 @@ with tab3:
     )
 
     confirmar_join_etapa = st.checkbox(
-        "⚠️️ Confirmo que deseo actualizar el campo etapa en"
+        "⚠ Confirmo que deseo actualizar el campo etapa en"
         " `usuarios_miaa_conmedidor` basado en la coincidencia de predio",
         key="chk_confirmar_join_etapa",
     )
