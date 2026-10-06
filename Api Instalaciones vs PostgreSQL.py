@@ -224,14 +224,13 @@ def cargar_pagina_medidores_inteligentes(limit=50, offset=0):
 
 @st.cache_data(ttl=300)
 def cargar_datos_api():
-    """Conecta con la API externa de MIAA usando credenciales de st.secrets para obtener registros de instalaciones."""
-    try:
-        usuario = st.secrets["api"]["usuario"]
-        password = st.secrets["api"]["password"]
-
-        # Payload limpio
-        payload = {"username": usuario, "password": password}
-        headers = {"Content-Type": "application/json"}
+  try:
+    usuario = st.secrets["api"]["usuario"]
+    password = st.secrets["api"]["password"]
+    res_login = requests.post(
+        url_login,
+        json={"username": usuario, "password": password},
+        headers={"Content-Type": "application/json"},
     )
     if res_login.status_code == 200:
       token = res_login.json().get("token") or res_login.json().get(
