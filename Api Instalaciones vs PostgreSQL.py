@@ -222,49 +222,89 @@ def cargar_pagina_medidores_inteligentes(limit=50, offset=0):
     return pd.DataFrame()
 
 
+BASE_URL = "https://prelec.miaa.mx"
+URL_LOGIN_CORRECTA = "/auth/login"
+URL_INSTALACIONES = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones"
+
+
 @st.cache_data(ttl=300)
 def cargar_datos_api():
-  try:
-    usuario = st.secrets["api"]["usuario"]
-    password = st.secrets["api"]["password"]
-    res_login = requests.post(
-        url_login,
-        json={"username": usuario, "password": password},
-        headers={"Content-Type": "application/json"},
-    )
-    if res_login.status_code == 200:
-      token = res_login.json().get("token") or res_login.json().get(
-          "access_token"
-      )
-      if token:
+    """Conecta con la API de MIAA, procesa la respuesta y devuelve un DataFrame limpio."""
+    try:
+        # 1. Obtener credenciales de los secretos
+        usuario = st.secrets["api"]["usuario"]
+        password = st.secrets["api"]["password"]
+
+        # CORREGIDO: Definir correctamente la URL de login usando las constantes
+        url_login = BASE_URL + URL_LOGIN_CORRECTA
+
+        # 2. Petición de autenticación
+        res_login = requests.post(
+            url_login,
+            json={"username": usuario, "password": password},
+            headers={"Content-Type": "application/json"},
+            timeout=15,
+        )
+
+        if res_login.status_code != 200:
+            st.error(
+                f"Error de Autenticación (HTTP {res_login.status_code}):"
+                f" {res_login.text[:150]}"
+            )
+            return pd.DataFrame()  # Retorna DataFrame vacío en vez de romper
+
+        data_login = res_login.json()
+        token = data_login.get("token") or data_login.get("access_token")
+
+        if not token:
+            st.error("Login exitoso (200) pero no se encontró la clave del token.")
+            return pd.DataFrame()
+
+        # 3. Petición de instalaciones usando el token Bearer
         res_inst = requests.get(
-            url_instalaciones,
+            URL_INSTALACIONES,
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {token}",
             },
+            timeout=45,
         )
-        if res_inst.status_code == 200:
-          data = res_inst.json()
-          if isinstance(data, list):
+
+        if res_inst.status_code != 200:
+            st.error(
+                f"Error al consultar instalaciones (HTTP"
+                f" {res_inst.status_code}): {res_inst.text[:150]}"
+            )
+            return pd.DataFrame()
+
+        # 4. Procesamiento de datos JSON a DataFrame
+        data = res_inst.json()
+        df = pd.DataFrame()
+
+        if isinstance(data, list):
             df = pd.DataFrame(data)
-          elif isinstance(data, dict):
-            df = pd.DataFrame()
+        elif isinstance(data, dict):
             for key in ["data", "result", "items", "instalaciones"]:
-              if key in data and isinstance(data[key], list):
-                df = pd.DataFrame(data[key])
-                break
+                if key in data and isinstance(data[key], list):
+                    df = pd.DataFrame(data[key])
+                    break
             if df.empty:
-              df = pd.DataFrame([data])
+                df = pd.DataFrame([data])
 
-          if not df.empty:
+        # 5. Mapeo de columnas normalizadas
+        if not df.empty:
             if "numeroCliente" in df.columns:
-              df["Cliente"] = df["numeroCliente"]
+                df["Cliente"] = df["numeroCliente"]
             elif "numero_cliente" in df.columns:
-              df["Cliente"] = df["numero_cliente"]
+                df["Cliente"] = df["numero_cliente"]
             elif "numCliente" in df.columns:
-              df["Cliente"] = df["numCliente"]
+                df["Cliente"] = df["numCliente"]
 
+        return df
+
+    except Exception as e:
+        st.error(f"Excepción crítica al conectar con la API: {e}")
+        return pd.DataFrame()
             col_api_predio = next(
                 (
                     c
