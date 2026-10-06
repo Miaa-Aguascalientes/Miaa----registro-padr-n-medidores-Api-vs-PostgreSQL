@@ -222,6 +222,8 @@ def cargar_pagina_medidores_inteligentes(limit=50, offset=0):
     return pd.DataFrame()
 
 
+
+
 BASE_URL = "https://prelec.miaa.mx"
 URL_LOGIN_CORRECTA = "/auth/login"
 URL_INSTALACIONES = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones"
@@ -235,7 +237,7 @@ def cargar_datos_api():
         usuario = st.secrets["api"]["usuario"]
         password = st.secrets["api"]["password"]
 
-        # CORREGIDO: Definir correctamente la URL de login usando las constantes
+        # Definir correctamente la URL de login usando las constantes
         url_login = BASE_URL + URL_LOGIN_CORRECTA
 
         # 2. Petición de autenticación
@@ -291,8 +293,9 @@ def cargar_datos_api():
             if df.empty:
                 df = pd.DataFrame([data])
 
-        # 5. Mapeo de columnas normalizadas
+        # 5. Mapeo y normalización de columnas
         if not df.empty:
+            # Normalizar número de cliente
             if "numeroCliente" in df.columns:
                 df["Cliente"] = df["numeroCliente"]
             elif "numero_cliente" in df.columns:
@@ -300,11 +303,7 @@ def cargar_datos_api():
             elif "numCliente" in df.columns:
                 df["Cliente"] = df["numCliente"]
 
-        return df
-
-    except Exception as e:
-        st.error(f"Excepción crítica al conectar con la API: {e}")
-        return pd.DataFrame()
+            # Buscar y normalizar columna de predio
             col_api_predio = next(
                 (
                     c
@@ -318,16 +317,22 @@ def cargar_datos_api():
                 ),
                 None,
             )
+            if col_api_predio:
+                df["Predio"] = df[col_api_predio]
+
+            # Buscar y normalizar columna de unidad
             col_api_unidad = next(
-                (
-                    c
-                    for c in ["unidad", "unidadViv", "unidad_viv"]
-                    if c in df.columns
-                ),
+                (c for c in ["unidad", "unidadViv", "unidad_viv"] if c in df.columns),
                 None,
             )
+            if col_api_unidad:
+                df["Unidad"] = df[col_api_unidad]
 
-            if col_api_predio:
+        return df
+
+    except Exception as e:
+        st.error(f"Excepción crítica al conectar con la API: {e}")
+        return pd.DataFrame()
 
               def construir_predio_viv(row):
                 p = row[col_api_predio]
