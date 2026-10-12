@@ -230,8 +230,6 @@ URL_INSTALACIONES = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones
 @st.cache_data(ttl=300)
 def cargar_datos_api():
   """Conecta con la API de MIAA con reintentos automáticos para lidiar con errores 503 temporales."""
-  import time
-
   # 1. Obtener credenciales de los secretos
   usuario = st.secrets["api"]["usuario"]
   password = st.secrets["api"]["password"]
@@ -240,11 +238,11 @@ def cargar_datos_api():
   token = None
   max_intentos = 3
   es_exitoso = False
+  data = None
 
-  # Bucle de reintentos para la autenticación y la petición
+  # Bucle de reintentos para la autenticación
   for intento in range(1, max_intentos + 1):
     try:
-      # Petición de autenticación
       res_login = requests.post(
           url_login,
           json={"username": usuario, "password": password},
@@ -258,18 +256,15 @@ def cargar_datos_api():
         if token:
           break
       
-      # Si falla el login temporalmente, esperamos antes de reintentar
       time.sleep(2)
     except Exception:
       time.sleep(2)
 
   if not token:
-    st.error(
-        "Error de Autenticación o la API no responde tras varios intentos."
-    )
+    st.error("Error de Autenticación o la API no responde tras varios intentos.")
     return pd.DataFrame()
 
-  # 3. Petición de instalaciones con reintentos para el código HTTP 503
+  # 2. Petición de instalaciones con reintentos para el código HTTP 503
   for intento in range(1, max_intentos + 1):
     try:
       res_inst = requests.get(
@@ -281,7 +276,6 @@ def cargar_datos_api():
           timeout=45,
       )
 
-      # Si el servidor regresa 503 (Servicio no disponible), reintentamos
       if res_inst.status_code == 503:
         agregar_log(
             f"⚠️ [AVISO API] Intento {intento}/{max_intentos}: El servicio de"
@@ -297,7 +291,6 @@ def cargar_datos_api():
         )
         return pd.DataFrame()
 
-      # Si es 200 OK, rompemos el ciclo y procesamos
       data = res_inst.json()
       es_exitoso = True
       break
@@ -306,7 +299,7 @@ def cargar_datos_api():
       agregar_log(f"⚠️ [AVISO API] Error de red en intento {intento}: {e}")
       time.sleep(3)
 
-  if not es_exitoso:
+  if not es_exitoso or data is None:
     st.warning(
         "⚠️ El servicio de técnica de la API sigue sin estar disponible (HTTP"
         " 503). El sistema continuará operando con los datos locales de"
@@ -314,7 +307,7 @@ def cargar_datos_api():
     )
     return pd.DataFrame()
 
-  # 4. Procesamiento de datos JSON a DataFrame (Resto de tu lógica intacta)
+  # 3. Procesamiento de datos JSON a DataFrame
   df = pd.DataFrame()
   if isinstance(data, list):
     df = pd.DataFrame(data)
@@ -326,7 +319,7 @@ def cargar_datos_api():
     if df.empty:
       df = pd.DataFrame([data])
 
-  # 5. Mapeo, normalización y limpieza de columnas
+  # 4. Mapeo, normalización y limpieza de columnas
   if not df.empty:
     if "numeroCliente" in df.columns:
       df["Cliente"] = df["numeroCliente"]
