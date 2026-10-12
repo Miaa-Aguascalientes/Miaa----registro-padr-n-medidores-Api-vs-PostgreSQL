@@ -230,7 +230,6 @@ URL_INSTALACIONES = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones
 @st.cache_data(ttl=300)
 def cargar_datos_api():
   """Conecta con la API de MIAA con reintentos automáticos para lidiar con errores 503 temporales."""
-  # 1. Obtener credenciales de los secretos
   usuario = st.secrets["api"]["usuario"]
   password = st.secrets["api"]["password"]
   url_login = BASE_URL + URL_LOGIN_CORRECTA
@@ -240,7 +239,6 @@ def cargar_datos_api():
   es_exitoso = False
   data = None
 
-  # Bucle de reintentos para la autenticación
   for intento in range(1, max_intentos + 1):
     try:
       res_login = requests.post(
@@ -249,13 +247,11 @@ def cargar_datos_api():
           headers={"Content-Type": "application/json"},
           timeout=15,
       )
-
       if res_login.status_code == 200:
         data_login = res_login.json()
         token = data_login.get("token") or data_login.get("access_token")
         if token:
           break
-      
       time.sleep(2)
     except Exception:
       time.sleep(2)
@@ -264,7 +260,6 @@ def cargar_datos_api():
     st.error("Error de Autenticación o la API no responde tras varios intentos.")
     return pd.DataFrame()
 
-  # 2. Petición de instalaciones con reintentos para el código HTTP 503
   for intento in range(1, max_intentos + 1):
     try:
       res_inst = requests.get(
@@ -307,7 +302,6 @@ def cargar_datos_api():
     )
     return pd.DataFrame()
 
-  # 3. Procesamiento de datos JSON a DataFrame
   df = pd.DataFrame()
   if isinstance(data, list):
     df = pd.DataFrame(data)
@@ -319,7 +313,6 @@ def cargar_datos_api():
     if df.empty:
       df = pd.DataFrame([data])
 
-  # 4. Mapeo, normalización y limpieza de columnas
   if not df.empty:
     if "numeroCliente" in df.columns:
       df["Cliente"] = df["numeroCliente"]
@@ -408,10 +401,6 @@ def cargar_datos_api():
     df = df[cols_prioritarias + otras_cols]
 
   return df
-    
-  except Exception as e:
-    st.error(f"Excepción crítica al conectar con la API: {e}")
-    return pd.DataFrame()
 
 
 # ==========================================
