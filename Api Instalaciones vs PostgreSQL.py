@@ -129,8 +129,8 @@ def agregar_log(mensaje):
 # 3. CONEXIONES Y CONSULTAS (SQL Y API)
 # ==========================================
 BASE_URL = "https://prelec.miaa.mx"
-url_login = "https://prelec.miaa.mx/auth/v2/login"
-url_instalaciones = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones"
+URL_LOGIN_CORRECTA = "/auth/login"
+URL_INSTALACIONES = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones"
 
 
 def obtener_motor_postgres():
@@ -222,44 +222,44 @@ def cargar_pagina_medidores_inteligentes(limit=50, offset=0):
     return pd.DataFrame()
 
 
-BASE_URL = "https://prelec.miaa.mx"
-URL_LOGIN_CORRECTA = "/auth/login"
-URL_INSTALACIONES = "https://prelec.miaa.mx/msvc-tecnica/medidores/instalaciones"
-
-
 @st.cache_data(ttl=300)
 def cargar_datos_api():
-  """Conecta con la API de MIAA con reintentos automáticos para lidiar con errores 503 temporales."""
+  """Conecta con la API de MIAA con reintentos inteligentes (Backoff exponencial) para mitigar errores 503."""
   usuario = st.secrets["api"]["usuario"]
   password = st.secrets["api"]["password"]
   url_login = BASE_URL + URL_LOGIN_CORRECTA
 
   token = None
-  max_intentos = 3
-  es_exitoso = False
+  max_intentos = 5
   data = None
 
+  # 1. Obtener Token con reintentos
   for intento in range(1, max_intentos + 1):
     try:
       res_login = requests.post(
           url_login,
           json={"username": usuario, "password": password},
           headers={"Content-Type": "application/json"},
-          timeout=15,
+          timeout=20,
       )
       if res_login.status_code == 200:
         data_login = res_login.json()
         token = data_login.get("token") or data_login.get("access_token")
         if token:
           break
-      time.sleep(2)
+      tiempo_espera = intento * 3
+      time.sleep(tiempo_espera)
     except Exception:
-      time.sleep(2)
+      time.sleep(3)
 
   if not token:
-    st.error("Error de Autenticación o la API no responde tras varios intentos.")
+    agregar_log(
+        "⚠️ [AVISO API] No se pudo autenticar en la API tras varios"
+        " intentos. Operando con base local."
+    )
     return pd.DataFrame()
 
+  # 2. Consultar Instalaciones con Backoff Exponencial ante 503
   for intento in range(1, max_intentos + 1):
     try:
       res_inst = requests.get(
@@ -268,38 +268,35 @@ def cargar_datos_api():
               "Content-Type": "application/json",
               "Authorization": f"Bearer {token}",
           },
-          timeout=45,
+          timeout=60,
       )
 
       if res_inst.status_code == 503:
+        tiempo_espera = intento * 5  # 5s, 10s, 15s, 20s...
         agregar_log(
-            f"⚠️ [AVISO API] Intento {intento}/{max_intentos}: El servicio de"
-            " técnica devolvió 503. Reintentando en 3 segundos..."
+            f"⚠️ [AVISO API] Intento {intento}/{max_intentos}: Servidor ocupado"
+            f" (HTTP 503). Reintentando en {tiempo_espera}s..."
         )
-        time.sleep(3)
+        time.sleep(tiempo_espera)
         continue
 
       if res_inst.status_code != 200:
-        st.error(
-            f"Error al consultar instalaciones (HTTP"
-            f" {res_inst.status_code}): {res_inst.text[:150]}"
+        agregar_log(
+            f"⚠️ [AVISO API] Error HTTP {res_inst.status_code} al consultar"
+            f" instalaciones."
         )
         return pd.DataFrame()
 
       data = res_inst.json()
-      es_exitoso = True
       break
 
     except requests.exceptions.RequestException as e:
-      agregar_log(f"⚠️ [AVISO API] Error de red en intento {intento}: {e}")
-      time.sleep(3)
+      agregar_log(
+          f"⚠️ [AVISO API] Error de red en intento {intento}/{max_intentos}: {e}"
+      )
+      time.sleep(5)
 
-  if not es_exitoso or data is None:
-    st.warning(
-        "⚠️ El servicio de técnica de la API sigue sin estar disponible (HTTP"
-        " 503). El sistema continuará operando con los datos locales de"
-        " PostgreSQL."
-    )
+  if data is None:
     return pd.DataFrame()
 
   df = pd.DataFrame()
@@ -437,7 +434,9 @@ def ejecutar_sincronizacion_automatica(
 
   if df_filtrado.empty:
     actualizar_progreso(
-        1.0, "[ERROR] No se pudo obtener respuesta o datos válidos de la API."
+        1.0,
+        "[AVISO] La API devolvió HTTP 503 o está vacía. El sistema opera"
+        " con PostgreSQL.",
     )
     return False
 
@@ -1048,7 +1047,7 @@ with tab1:
           )
 
         agregar_log(
-            f"🛠️️ [CORRECCIÓN DISCREPANCIA] Se actualizaron {filas_corregidas}"
+            f"🛠 [CORRECCIÓN DISCREPANCIA] Se actualizaron {filas_corregidas}"
             " registros para establecer etapa = '2'."
         )
         st.success(
@@ -1339,9 +1338,10 @@ with tab2:
       usuario = st.secrets["api"]["usuario"]
       password = st.secrets["api"]["password"]
       res_login = requests.post(
-          url_login,
+          BASE_URL + URL_LOGIN_CORRECTA,
           json={"username": usuario, "password": password},
           headers={"Content-Type": "application/json"},
+          timeout=15,
       )
       if res_login.status_code == 200:
         token = res_login.json().get("token") or res_login.json().get(
@@ -1349,11 +1349,12 @@ with tab2:
         )
         if token:
           res_inst = requests.get(
-              url_instalaciones,
+              URL_INSTALACIONES,
               headers={
                   "Content-Type": "application/json",
                   "Authorization": f"Bearer {token}",
               },
+              timeout=45,
           )
           if res_inst.status_code == 200:
             data = res_inst.json()
@@ -1711,6 +1712,6 @@ with tab3:
     else:
       st.warning("La tabla `medidores_inteligentes` está actualmente vacía.")
   except Exception as e:
-    st.warning(
-        f"No se pudo cargar la vista previa de `medidores_inteligentes`: {e}"
-    )
+      st.warning(
+          f"No se pudo cargar la vista previa de `medidores_inteligentes`: {e}"
+      )
