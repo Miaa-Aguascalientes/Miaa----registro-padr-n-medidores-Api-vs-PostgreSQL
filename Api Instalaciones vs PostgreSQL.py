@@ -1909,7 +1909,7 @@ with tab4:
     st.markdown(
         "Desde esta sección puedes **insertar nuevos registros o actualizar los"
         ' existentes** en la tabla `"Usuarios"."usuarios_miaa_conmedidor"`'
-        " utilizando los campos completos de la hoja **`etapa2`** de Google Sheets."
+        " utilizando los campos de la hoja **`etapa2`** de Google Sheets sin eliminar información previa."
     )
 
     with st.container(border=True):
@@ -1917,9 +1917,8 @@ with tab4:
             "#### 📊 Sincronización Masiva (UPSERT) desde Google Sheets (`etapa2`)"
         )
         st.markdown(
-            "Los registros cuyo **`Predio_Viv`** no exista en la base de datos se"
-            " **insertarán como nuevos**, mientras que aquellos que ya existan"
-            " serán **actualizados** con toda la información provista en el Sheet."
+            "Los registros cuyo **`Predio_Viv`** no exista se **insertarán como nuevos**, "
+            "y los existentes se **actualizarán** conservando sus datos intactos."
         )
 
         confirmar_upsert_etapa2 = st.checkbox(
@@ -1935,59 +1934,41 @@ with tab4:
             use_container_width=True,
         ):
             if not confirmar_upsert_etapa2:
-                st.error(
-                    "Debes marcar la casilla de confirmación para ejecutar la"
-                    " sincronización."
-                )
+                st.error("Debes marcar la casilla de confirmación para ejecutar la sincronización.")
             else:
                 try:
-                    # URL del CSV de exportación directa de la hoja 'etapa2' (gid=1668332296)
                     sheet_etapa2_csv_url = "https://docs.google.com/spreadsheets/d/1Ovj2DZ19Y8H4BtamnVwB71c2dyHC3dyVmau-tMbWre8/export?format=csv&gid=1668332296"
 
-                    agregar_log(
-                        "📥 [GOOGLE SHEETS] Descargando datos de la hoja 'etapa2'..."
-                    )
-                    df_etapa2 = pd.read_csv(sheet_etapa2_csv_url)
+                    agregar_log("📥 [GOOGLE SHEETS] Descargando datos de la hoja 'etapa2'...")
+                    df_etapa2 = pd.read_csv(sheet_etapa2_csv_url, low_memory=False)
 
                     if df_etapa2.empty:
-                        st.error(
-                            "No se pudieron obtener datos desde el Google Sheet o la hoja"
-                            " está vacía."
-                        )
+                        st.error("No se pudieron obtener datos desde el Google Sheet o la hoja está vacía.")
                     else:
-                        # Limpiar espacios en los nombres de las columnas del DataFrame
                         df_etapa2.columns = df_etapa2.columns.str.strip()
 
-                        # Identificar la columna de predio de forma flexible
                         col_predio = next(
                             (c for c in ["Predio_Viv", "predio_viv", "predio", "PredioViv"] if c in df_etapa2.columns),
                             None,
                         )
 
                         if not col_predio:
-                            st.error(
-                                "El archivo de Google Sheets no contiene la columna"
-                                " clave 'Predio_Viv'."
-                            )
+                            st.error("El archivo de Google Sheets no contiene la columna clave 'Predio_Viv'.")
                         else:
-                            df_etapa2["Predio_Viv_clean"] = (
-                                df_etapa2[col_predio].astype(str).str.strip()
-                            )
+                            df_etapa2["Predio_Viv_clean"] = df_etapa2[col_predio].astype(str).str.strip()
                             df_etapa2_clean = df_etapa2[
-                                ~df_etapa2["Predio_Viv_clean"].str.lower().isin(
-                                    ["none", "nan", "", "null", "0"]
-                                )
+                                ~df_etapa2["Predio_Viv_clean"].str.lower().isin(["none", "nan", "", "null", "0", "nat"])
                             ].copy()
+
+                            # Reemplazar valores nulos o texto basura por None en todo el DataFrame para evitar errores de tipo en SQL
+                            df_etapa2_clean = df_etapa2_clean.where(pd.notnull(df_etapa2_clean), None)
 
                             engine_pg = obtener_motor_postgres()
 
                             agregar_log(
-                                "📦 [GOOGLE SHEETS] Se obtuvieron"
-                                f" {len(df_etapa2_clean):,} registros válidos. Subiendo a"
-                                " tabla temporal (staging)..."
+                                f"📦 [GOOGLE SHEETS] Se obtuvieron {len(df_etapa2_clean):,} registros válidos. Subiendo a tabla de paso (staging)..."
                             )
 
-                            # Subir datos a tabla temporal en esquema Usuarios
                             df_etapa2_clean.to_sql(
                                 "_staging_usuarios_etapa2",
                                 con=engine_pg,
@@ -1997,57 +1978,46 @@ with tab4:
                                 chunksize=5000,
                             )
 
-                            agregar_log(
-                                "⚡ [PASO 1/2] Actualizando registros existentes en"
-                                ' "Usuarios"."usuarios_miaa_conmedidor"...'
-                            )
+                            agregar_log('⚡ [PASO 1/2] Actualizando registros existentes en "Usuarios"."usuarios_miaa_conmedidor"...')
 
-                            # Query de UPDATE corregida con casting explícito para campos numéricos
                             query_update_existentes = text("""
                                 UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
                                 SET 
-                                    "Cliente" = CASE WHEN s."Cliente" IS NOT NULL AND TRIM(CAST(s."Cliente" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Cliente" AS INTEGER) ELSE u."Cliente" END,
-                                    "Nombre" = COALESCE(s."Nombre", u."Nombre"),
-                                    "Colonia" = COALESCE(s."Colonia", u."Colonia"),
-                                    "Domicilio" = COALESCE(s."Domicilio", u."Domicilio"),
-                                    "Estado_del" = COALESCE(s."Estado_del", u."Estado_del"),
-                                    "Situaci_n" = COALESCE(s."Situaci_n", u."Situaci_n"),
-                                    "Uso" = COALESCE(s."Uso", u."Uso"),
-                                    "Nivel" = COALESCE(s."Nivel", u."Nivel"),
-                                    "Tiene_medi" = COALESCE(s."Tiene_medi", u."Tiene_medi"),
-                                    "Marca" = COALESCE(s."Marca", u."Marca"),
-                                    "Modelo" = COALESCE(s."Modelo", u."Modelo"),
-                                    "Medidor" = CASE WHEN s."Medidor" IS NOT NULL AND TRIM(CAST(s."Medidor" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Medidor" AS DOUBLE PRECISION) ELSE u."Medidor" END,
-                                    "Diametro_m" = CASE WHEN s."Diametro_m" IS NOT NULL AND TRIM(CAST(s."Diametro_m" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Diametro_m" AS DOUBLE PRECISION) ELSE u."Diametro_m" END,
-                                    "Ubicaci_n" = COALESCE(s."Ubicaci_n", u."Ubicaci_n"),
-                                    "Primer_ins" = CASE WHEN s."Primer_ins" IS NOT NULL AND TRIM(CAST(s."Primer_ins" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Primer_ins" AS TIMESTAMP WITH TIME ZONE) ELSE u."Primer_ins" END,
-                                    "Cambios_de" = COALESCE(s."Cambios_de", u."Cambios_de"),
-                                    "Lectura_Ac" = CASE WHEN s."Lectura_Ac" IS NOT NULL AND TRIM(CAST(s."Lectura_Ac" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Lectura_Ac" AS DOUBLE PRECISION) ELSE u."Lectura_Ac" END,
-                                    "Latitud" = CASE WHEN s."Latitud" IS NOT NULL AND TRIM(CAST(s."Latitud" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Latitud" AS DOUBLE PRECISION) ELSE u."Latitud" END,
-                                    "Longitud" = CASE WHEN s."Longitud" IS NOT NULL AND TRIM(CAST(s."Longitud" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Longitud" AS DOUBLE PRECISION) ELSE u."Longitud" END,
-                                    "Plan_factu" = COALESCE(s."Plan_factu", u."Plan_factu"),
-                                    "Caso" = COALESCE(s."Caso", u."Caso"),
-                                    "Ult_Anoma" = COALESCE(s."Ult_Anoma", u."Ult_Anoma"),
-                                    "Gran_consu" = COALESCE(s."Gran_consu", u."Gran_consu"),
-                                    "Es_macrome" = COALESCE(s."Es_macrome", u."Es_macrome"),
-                                    "Cmo_Factur" = COALESCE(s."Cmo_Factur", u."Cmo_Factur"),
-                                    "Cmo_Promed" = COALESCE(s."Cmo_Promed", u."Cmo_Promed"),
-                                    "_Serie" = COALESCE(s."_Serie", u."_Serie"),
-                                    "_Colonia" = COALESCE(s."_Colonia", u."_Colonia"),
-                                    "_Domicilio" = COALESCE(s."_Domicilio", u."_Domicilio"),
-                                    "_Instalador" = COALESCE(s."_Instalador", u."_Instalador"),
-                                    "_Tipo_instalador" = COALESCE(s."_Tipo_instalador", u."_Tipo_instalador"),
-                                    "_Lectura_actual" = CASE WHEN s."_Lectura_actual" IS NOT NULL AND TRIM(CAST(s."_Lectura_actual" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."_Lectura_actual" AS DOUBLE PRECISION) ELSE u."_Lectura_actual" END,
-                                    "_Fecha_registro" = CASE WHEN s."_Fecha_registro" IS NOT NULL AND TRIM(CAST(s."_Fecha_registro" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."_Fecha_registro" AS TIMESTAMP WITH TIME ZONE) ELSE u."_Fecha_registro" END,
-                                    "_Fecha_instalacion" = CASE WHEN s."_Fecha_instalacion" IS NOT NULL AND TRIM(CAST(s."_Fecha_instalacion" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."_Fecha_instalacion" AS TIMESTAMP WITH TIME ZONE) ELSE u."_Fecha_instalacion" END,
+                                    "Cliente" = COALESCE(NULLIF(CAST(s."Cliente" AS TEXT), '')::INTEGER, u."Cliente"),
+                                    "Nombre" = COALESCE(NULLIF(s."Nombre", ''), u."Nombre"),
+                                    "Colonia" = COALESCE(NULLIF(s."Colonia", ''), u."Colonia"),
+                                    "Domicilio" = COALESCE(NULLIF(s."Domicilio", ''), u."Domicilio"),
+                                    "Estado_del" = COALESCE(NULLIF(s."Estado_del", ''), u."Estado_del"),
+                                    "Situaci_n" = COALESCE(NULLIF(s."Situaci_n", ''), u."Situaci_n"),
+                                    "Uso" = COALESCE(NULLIF(s."Uso", ''), u."Uso"),
+                                    "Nivel" = COALESCE(NULLIF(s."Nivel", ''), u."Nivel"),
+                                    "Tiene_medi" = COALESCE(NULLIF(s."Tiene_medi", ''), u."Tiene_medi"),
+                                    "Marca" = COALESCE(NULLIF(s."Marca", ''), u."Marca"),
+                                    "Modelo" = COALESCE(NULLIF(s."Modelo", ''), u."Modelo"),
+                                    "Medidor" = COALESCE(NULLIF(CAST(s."Medidor" AS TEXT), '')::DOUBLE PRECISION, u."Medidor"),
+                                    "Diametro_m" = COALESCE(NULLIF(CAST(s."Diametro_m" AS TEXT), '')::DOUBLE PRECISION, u."Diametro_m"),
+                                    "Ubicaci_n" = COALESCE(NULLIF(s."Ubicaci_n", ''), u."Ubicaci_n"),
+                                    "Primer_ins" = COALESCE(NULLIF(CAST(s."Primer_ins" AS TEXT), '')::TIMESTAMP WITH TIME ZONE, u."Primer_ins"),
+                                    "Cambios_de" = COALESCE(NULLIF(s."Cambios_de", ''), u."Cambios_de"),
+                                    "Lectura_Ac" = COALESCE(NULLIF(CAST(s."Lectura_Ac" AS TEXT), '')::DOUBLE PRECISION, u."Lectura_Ac"),
+                                    "Latitud" = COALESCE(NULLIF(CAST(s."Latitud" AS TEXT), '')::DOUBLE PRECISION, u."Latitud"),
+                                    "Longitud" = COALESCE(NULLIF(CAST(s."Longitud" AS TEXT), '')::DOUBLE PRECISION, u."Longitud"),
+                                    "Plan_factu" = COALESCE(NULLIF(s."Plan_factu", ''), u."Plan_factu"),
+                                    "Caso" = COALESCE(NULLIF(s."Caso", ''), u."Caso"),
+                                    "Ult_Anoma" = COALESCE(NULLIF(s."Ult_Anoma", ''), u."Ult_Anoma"),
+                                    "Gran_consu" = COALESCE(NULLIF(s."Gran_consu", ''), u."Gran_consu"),
+                                    "Es_macrome" = COALESCE(NULLIF(s."Es_macrome", ''), u."Es_macrome"),
+                                    "Cmo_Factur" = COALESCE(NULLIF(s."Cmo_Factur", ''), u."Cmo_Factur"),
+                                    "Cmo_Promed" = COALESCE(NULLIF(s."Cmo_Promed", ''), u."Cmo_Promed"),
+                                    "_Serie" = COALESCE(NULLIF(s."_Serie", ''), u."_Serie"),
+                                    "_Colonia" = COALESCE(NULLIF(s."_Colonia", ''), u."_Colonia"),
+                                    "_Domicilio" = COALESCE(NULLIF(s."_Domicilio", ''), u."_Domicilio"),
+                                    "_Instalador" = COALESCE(NULLIF(s."_Instalador", ''), u."_Instalador"),
+                                    "_Tipo_instalador" = COALESCE(NULLIF(s."_Tipo_instalador", ''), u."_Tipo_instalador"),
+                                    "_Lectura_actual" = COALESCE(NULLIF(CAST(s."_Lectura_actual" AS TEXT), '')::DOUBLE PRECISION, u."_Lectura_actual"),
+                                    "_Fecha_registro" = COALESCE(NULLIF(CAST(s."_Fecha_registro" AS TEXT), '')::TIMESTAMP WITH TIME ZONE, u."_Fecha_registro"),
+                                    "_Fecha_instalacion" = COALESCE(NULLIF(CAST(s."_Fecha_instalacion" AS TEXT), '')::TIMESTAMP WITH TIME ZONE, u."_Fecha_instalacion"),
                                     "_Ultima_actualizacion" = :tiempo_actual,
-                                    geom = CASE 
-                                        WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%' 
-                                        THEN ST_GeomFromWKB(decode(TRIM(CAST(s.geom AS TEXT)), 'hex'))
-                                        WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND (TRIM(CAST(s.geom AS TEXT)) LIKE 'POINT%' OR TRIM(CAST(s.geom AS TEXT)) LIKE 'SRID=%') 
-                                        THEN ST_GeomFromText(TRIM(CAST(s.geom AS TEXT)))
-                                        ELSE u.geom 
-                                    END,
                                     etapa = '2'
                                 FROM "Usuarios"."_staging_usuarios_etapa2" AS s
                                 WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean";
@@ -2059,101 +2029,57 @@ with tab4:
                                     {"tiempo_actual": datetime.now(ZONA_MEXICO)},
                                 )
                                 conn.commit()
-                                filas_actualizadas = (
-                                    res_up.rowcount if hasattr(res_up, "rowcount") else 0
-                                )
+                                filas_actualizadas = res_up.rowcount if hasattr(res_up, "rowcount") else 0
 
-                                agregar_log(
-                                    "⚡ [PASO 2/2] Insertando nuevos registros en"
-                                    ' "Usuarios"."usuarios_miaa_conmedidor"...'
-                                )
+                                agregar_log('⚡ [PASO 2/2] Insertando nuevos registros en "Usuarios"."usuarios_miaa_conmedidor"...')
 
-                                # Query de INSERT para registros nuevos que no existían previamente
                                 query_insert_nuevos = text("""
                                     INSERT INTO "Usuarios"."usuarios_miaa_conmedidor" (
-                                        "Predio_Viv",
-                                        "Cliente",
-                                        "Nombre",
-                                        "Colonia",
-                                        "Domicilio",
-                                        "Estado_del",
-                                        "Situaci_n",
-                                        "Uso",
-                                        "Nivel",
-                                        "Tiene_medi",
-                                        "Marca",
-                                        "Modelo",
-                                        "Medidor",
-                                        "Diametro_m",
-                                        "Ubicaci_n",
-                                        "Primer_ins",
-                                        "Cambios_de",
-                                        "Lectura_Ac",
-                                        "Latitud",
-                                        "Longitud",
-                                        "Plan_factu",
-                                        "Caso",
-                                        "Ult_Anoma",
-                                        "Gran_consu",
-                                        "Es_macrome",
-                                        "Cmo_Factur",
-                                        "Cmo_Promed",
-                                        "_Serie",
-                                        "_Colonia",
-                                        "_Domicilio",
-                                        "_Instalador",
-                                        "_Tipo_instalador",
-                                        "_Lectura_actual",
-                                        "_Fecha_registro",
-                                        "_Fecha_instalacion",
-                                        "_Ultima_actualizacion",
-                                        geom,
-                                        etapa
+                                        "Predio_Viv", "Cliente", "Nombre", "Colonia", "Domicilio", "Estado_del", 
+                                        "Situaci_n", "Uso", "Nivel", "Tiene_medi", "Marca", "Modelo", "Medidor", 
+                                        "Diametro_m", "Ubicaci_n", "Primer_ins", "Cambios_de", "Lectura_Ac", 
+                                        "Latitud", "Longitud", "Plan_factu", "Caso", "Ult_Anoma", "Gran_consu", 
+                                        "Es_macrome", "Cmo_Factur", "Cmo_Promed", "_Serie", "_Colonia", "_Domicilio", 
+                                        "_Instalador", "_Tipo_instalador", "_Lectura_actual", "_Fecha_registro", 
+                                        "_Fecha_instalacion", "_Ultima_actualizacion", etapa
                                     )
                                     SELECT 
                                         s."Predio_Viv_clean",
-                                        CASE WHEN s."Cliente" IS NOT NULL AND TRIM(CAST(s."Cliente" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Cliente" AS INTEGER) ELSE NULL END,
-                                        s."Nombre",
-                                        s."Colonia",
-                                        s."Domicilio",
-                                        s."Estado_del",
-                                        s."Situaci_n",
-                                        s."Uso",
-                                        s."Nivel",
-                                        s."Tiene_medi",
-                                        s."Marca",
-                                        s."Modelo",
-                                        s."Medidor",
-                                        s."Diametro_m",
-                                        s."Ubicaci_n",
-                                        CASE WHEN s."Primer_ins" IS NOT NULL AND TRIM(CAST(s."Primer_ins" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Primer_ins" AS TIMESTAMP WITH TIME ZONE) ELSE NULL END,
-                                        s."Cambios_de",
-                                        CASE WHEN s."Lectura_Ac" IS NOT NULL AND TRIM(CAST(s."Lectura_Ac" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Lectura_Ac" AS DOUBLE PRECISION) ELSE NULL END,
-                                        CASE WHEN s."Latitud" IS NOT NULL AND TRIM(CAST(s."Latitud" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Latitud" AS DOUBLE PRECISION) ELSE NULL END,
-                                        CASE WHEN s."Longitud" IS NOT NULL AND TRIM(CAST(s."Longitud" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Longitud" AS DOUBLE PRECISION) ELSE NULL END,
-                                        s."Plan_factu",
-                                        s."Caso",
-                                        s."Ult_Anoma",
-                                        s."Gran_consu",
-                                        s."Es_macrome",
-                                        s."Cmo_Factur",
-                                        s."Cmo_Promed",
-                                        s."_Serie",
-                                        s."_Colonia",
-                                        s."_Domicilio",
-                                        s."_Instalador",
-                                        s."_Tipo_instalador",
-                                        CASE WHEN s."_Lectura_actual" IS NOT NULL AND TRIM(CAST(s."_Lectura_actual" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."_Lectura_actual" AS DOUBLE PRECISION) ELSE NULL END,
-                                        CASE WHEN s."_Fecha_registro" IS NOT NULL AND TRIM(CAST(s."_Fecha_registro" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."_Fecha_registro" AS TIMESTAMP WITH TIME ZONE) ELSE NULL END,
-                                        CASE WHEN s."_Fecha_instalacion" IS NOT NULL AND TRIM(CAST(s."_Fecha_instalacion" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."_Fecha_instalacion" AS TIMESTAMP WITH TIME ZONE) ELSE NULL END,
+                                        NULLIF(CAST(s."Cliente" AS TEXT), '')::INTEGER,
+                                        NULLIF(s."Nombre", ''),
+                                        NULLIF(s."Colonia", ''),
+                                        NULLIF(s."Domicilio", ''),
+                                        NULLIF(s."Estado_del", ''),
+                                        NULLIF(s."Situaci_n", ''),
+                                        NULLIF(s."Uso", ''),
+                                        NULLIF(s."Nivel", ''),
+                                        NULLIF(s."Tiene_medi", ''),
+                                        NULLIF(s."Marca", ''),
+                                        NULLIF(s."Modelo", ''),
+                                        NULLIF(CAST(s."Medidor" AS TEXT), '')::DOUBLE PRECISION,
+                                        NULLIF(CAST(s."Diametro_m" AS TEXT), '')::DOUBLE PRECISION,
+                                        NULLIF(s."Ubicaci_n", ''),
+                                        NULLIF(CAST(s."Primer_ins" AS TEXT), '')::TIMESTAMP WITH TIME ZONE,
+                                        NULLIF(s."Cambios_de", ''),
+                                        NULLIF(CAST(s."Lectura_Ac" AS TEXT), '')::DOUBLE PRECISION,
+                                        NULLIF(CAST(s."Latitud" AS TEXT), '')::DOUBLE PRECISION,
+                                        NULLIF(CAST(s."Longitud" AS TEXT), '')::DOUBLE PRECISION,
+                                        NULLIF(s."Plan_factu", ''),
+                                        NULLIF(s."Caso", ''),
+                                        NULLIF(s."Ult_Anoma", ''),
+                                        NULLIF(s."Gran_consu", ''),
+                                        NULLIF(s."Es_macrome", ''),
+                                        NULLIF(s."Cmo_Factur", ''),
+                                        NULLIF(s."Cmo_Promed", ''),
+                                        NULLIF(s."_Serie", ''),
+                                        NULLIF(s."_Colonia", ''),
+                                        NULLIF(s."_Domicilio", ''),
+                                        NULLIF(s."_Instalador", ''),
+                                        NULLIF(s."_Tipo_instalador", ''),
+                                        NULLIF(CAST(s."_Lectura_actual" AS TEXT), '')::DOUBLE PRECISION,
+                                        NULLIF(CAST(s."_Fecha_registro" AS TEXT), '')::TIMESTAMP WITH TIME ZONE,
+                                        NULLIF(CAST(s."_Fecha_instalacion" AS TEXT), '')::TIMESTAMP WITH TIME ZONE,
                                         :tiempo_actual,
-                                        CASE 
-                                            WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%' 
-                                            THEN ST_GeomFromWKB(decode(TRIM(CAST(s.geom AS TEXT)), 'hex'))
-                                            WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND (TRIM(CAST(s.geom AS TEXT)) LIKE 'POINT%' OR TRIM(CAST(s.geom AS TEXT)) LIKE 'SRID=%') 
-                                            THEN ST_GeomFromText(TRIM(CAST(s.geom AS TEXT)))
-                                            ELSE NULL 
-                                        END,
                                         '2'
                                     FROM "Usuarios"."_staging_usuarios_etapa2" AS s
                                     WHERE NOT EXISTS (
@@ -2167,26 +2093,17 @@ with tab4:
                                     {"tiempo_actual": datetime.now(ZONA_MEXICO)},
                                 )
                                 conn.commit()
-                                filas_insertadas = (
-                                    res_ins.rowcount if hasattr(res_ins, "rowcount") else 0
-                                )
+                                filas_insertadas = res_ins.rowcount if hasattr(res_ins, "rowcount") else 0
 
-                                # Eliminar la tabla temporal de staging
-                                conn.execute(
-                                    text(
-                                        'DROP TABLE IF EXISTS'
-                                        ' "Usuarios"."_staging_usuarios_etapa2"'
-                                    )
-                                )
+                                # Limpieza de la tabla temporal staging
+                                conn.execute(text('DROP TABLE IF EXISTS "Usuarios"."_staging_usuarios_etapa2"'))
                                 conn.commit()
 
                             agregar_log(
-                                "🎉 [UPSERT ETAPA 2 EXITOSO] Proceso finalizado."
-                                f" Actualizados: {filas_actualizadas:,} | Insertados:"
-                                f" {filas_insertadas:,}."
+                                f"🎉 [UPSERT ETAPA 2 EXITOSO] Actualizados: {filas_actualizadas:,} | Insertados: {filas_insertadas:,}."
                             )
                             st.success(
-                                f"¡Sincronización de Etapa 2 completada con éxito! "
+                                f"¡Sincronización de Etapa 2 completada! "
                                 f"Registros actualizados: **{filas_actualizadas:,}** | "
                                 f"Nuevos registros insertados: **{filas_insertadas:,}**"
                             )
