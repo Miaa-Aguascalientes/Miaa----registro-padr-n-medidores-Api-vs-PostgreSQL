@@ -1582,11 +1582,21 @@ with tab3:
                   ' "Medidores"."medidores_inteligentes"...'
               )
 
-              # Query de UPDATE dinámico/masivo respetando los tipos de columna
+              # Query de UPDATE masivo con casting PostGIS seguro para el campo geom
               query_update_sheets = text("""
                             UPDATE "Medidores"."medidores_inteligentes" AS m
                             SET 
-                                geom = COALESCE(NULLIF(s.geom, ''), m.geom),
+                                geom = CASE 
+                                    WHEN s.geom IS NOT NULL 
+                                         AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN')
+                                         AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%' -- Si viene en Hex WKB
+                                    THEN ST_GeomFromWKB(decode(TRIM(CAST(s.geom AS TEXT)), 'hex'))
+                                    WHEN s.geom IS NOT NULL 
+                                         AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN')
+                                         AND (TRIM(CAST(s.geom AS TEXT)) LIKE 'POINT%' OR TRIM(CAST(s.geom AS TEXT)) LIKE 'SRID=%')
+                                    THEN ST_GeomFromText(TRIM(CAST(s.geom AS TEXT)))
+                                    ELSE m.geom 
+                                END,
                                 cliente = CASE 
                                     WHEN s.cliente IS NOT NULL AND TRIM(CAST(s.cliente AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
                                     THEN CAST(s.cliente AS INTEGER) ELSE m.cliente END,
