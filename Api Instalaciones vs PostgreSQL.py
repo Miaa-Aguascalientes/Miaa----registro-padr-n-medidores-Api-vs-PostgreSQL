@@ -1907,221 +1907,247 @@ with tab3:
 with tab4:
     st.subheader("🛠️ Gestión de la tabla: usuarios_miaa_conmedidor (Etapa 2)")
     st.markdown(
-        "Desde esta sección puedes **insertar nuevos registros o actualizar los"
-        ' existentes** en la tabla `"Usuarios"."usuarios_miaa_conmedidor"`'
-        " utilizando los campos de la hoja **`etapa2`** de Google Sheets de forma totalmente segura."
+        "Desde esta sección puedes auditar la hoja **`etapa2`** de Google Sheets contra la base de datos "
+        "y decidir cuándo insertar los nuevos registros o actualizar los existentes de forma segura."
     )
 
     with st.container(border=True):
+        st.markdown("#### 🔍 Paso 1: Auditoría de Predios (Sheet vs PostgreSQL)")
         st.markdown(
-            "#### 📊 Sincronización Masiva (UPSERT) desde Google Sheets (`etapa2`)"
-        )
-        st.markdown(
-            "Los registros cuyo **`Predio_Viv`** no exista se **insertarán como nuevos**, "
-            "y los existentes se **actualizarán** conservando y complementando su información."
+            "Haz clic en el botón para analizar el Google Sheet y conocer el desglose exacto de qué predios "
+            "ya se encuentran en la base de datos y cuáles son completamente nuevos."
         )
 
-        confirmar_upsert_etapa2 = st.checkbox(
-            "⚠️ Confirmo que deseo insertar/actualizar registros en"
-            " `usuarios_miaa_conmedidor` con la hoja `etapa2`",
-            key="chk_confirmar_upsert_etapa2",
-        )
+        if st.button("Ejecutar Auditoría de Predios (Etapa 2)", key="btn_auditar_etapa2", use_container_width=True):
+            try:
+                sheet_etapa2_csv_url = "https://docs.google.com/spreadsheets/d/1Ovj2DZ19Y8H4BtamnVwB71c2dyHC3dyVmau-tMbWre8/export?format=csv&gid=1668332296"
+                
+                agregar_log("📥 [AUDITORÍA] Descargando datos de la hoja 'etapa2' para análisis...")
+                df_auditoría = pd.read_csv(sheet_etapa2_csv_url, low_memory=False)
 
-        if st.button(
-            "Ejecutar Sincronización (UPSERT) Etapa 2",
-            type="primary",
-            key="btn_ejecutar_upsert_etapa2",
-            use_container_width=True,
-        ):
-            if not confirmar_upsert_etapa2:
-                st.error("Debes marcar la casilla de confirmación para ejecutar la sincronización.")
-            else:
-                try:
-                    sheet_etapa2_csv_url = "https://docs.google.com/spreadsheets/d/1Ovj2DZ19Y8H4BtamnVwB71c2dyHC3dyVmau-tMbWre8/export?format=csv&gid=1668332296"
+                if df_auditoría.empty:
+                    st.error("El Google Sheet está vacío.")
+                else:
+                    df_auditoría.columns = df_auditoría.columns.str.strip()
+                    col_predio = next((c for c in ["Predio_Viv", "predio_viv", "predio", "PredioViv"] if c in df_auditoría.columns), None)
 
-                    agregar_log("📥 [GOOGLE SHEETS] Descargando datos de la hoja 'etapa2'...")
-                    df_etapa2 = pd.read_csv(sheet_etapa2_csv_url, low_memory=False)
-
-                    if df_etapa2.empty:
-                        st.error("No se pudieron obtener datos desde el Google Sheet o la hoja está vacía.")
+                    if not col_predio:
+                        st.error("No se encontró la columna clave de predio en el Sheet.")
                     else:
-                        df_etapa2.columns = df_etapa2.columns.str.strip()
+                        df_auditoría["Predio_Viv_clean"] = df_auditoría[col_predio].astype(str).str.strip()
+                        df_auditoría = df_auditoría[
+                            ~df_auditoría["Predio_Viv_clean"].str.lower().isin(["none", "nan", "", "null", "0", "nat"])
+                        ].copy()
 
-                        col_predio = next(
-                            (c for c in ["Predio_Viv", "predio_viv", "predio", "PredioViv"] if c in df_etapa2.columns),
-                            None,
+                        engine_pg = obtener_motor_postgres()
+
+                        # Consultar predios existentes en PostgreSQL
+                        with engine_pg.connect() as conn_aud:
+                            df_pg_predios = pd.read_sql(
+                                'SELECT DISTINCT TRIM(CAST("Predio_Viv" AS TEXT)) as predio_pg FROM "Usuarios"."usuarios_miaa_conmedidor" WHERE "Predio_Viv" IS NOT NULL',
+                                con=conn_aud
+                            )
+                        
+                        set_pg_predios = set(df_pg_predios["predio_pg"].dropna().astype(str).str.strip())
+                        set_sheet_predios = set(df_auditoría["Predio_Viv_clean"].tolist())
+
+                        # Cruces
+                        predios_existentes = set_sheet_predios.intersection(set_pg_predios)
+                        predios_nuevos = set_sheet_predios.difference(set_pg_predios)
+
+                        # Guardar en session_state para mantener la vista
+                        st.session_state.df_sheet_audit = df_auditoría
+                        st.session_state.audit_listos = True
+
+                        st.success(f"¡Auditoría completada con éxito!")
+                        
+                        col_a1, col_a2, col_a3 = st.columns(3)
+                        with col_a1:
+                            st.metric("Total Registros en Sheet", len(set_sheet_predios))
+                        with col_a2:
+                            st.metric("Predios que Ya Existen (Actualizables)", len(predios_existentes))
+                        with col_a3:
+                            st.metric("Predios Nuevos (Insertables)", len(predios_nuevos))
+
+            except Exception as e:
+                st.error(f"Error al realizar la auditoría: {e}")
+
+    # Paso 2: Ejecución del UPSERT controlado
+    if st.session_state.get("audit_listos", False):
+        with st.container(border=True):
+            st.markdown("#### ⚡ Paso 2: Sincronización Controlada (Insertar Nuevos y Actualizar Existentes)")
+            st.markdown(
+                "Una vez revisada la auditoría, marca la casilla de confirmación y presiona el botón para aplicar "
+                "los cambios en la tabla `usuarios_miaa_conmedidor` respetando estrictamente todos los campos y formatos."
+            )
+
+            confirmar_upsert_etapa2 = st.checkbox(
+                "⚠️ Confirmo que deseo actualizar los registros existentes e insertar los nuevos desde la hoja `etapa2`",
+                key="chk_confirmar_upsert_etapa2",
+            )
+
+            if st.button("Ejecutar Sincronización (UPSERT) Controlada", type="primary", key="btn_ejecutar_upsert_etapa2", use_container_width=True):
+                if not confirmar_upsert_etapa2:
+                    st.error("Debes marcar la casilla de confirmación para ejecutar la sincronización.")
+                else:
+                    try:
+                        df_etapa2_clean = st.session_state.df_sheet_audit.copy()
+                        df_etapa2_clean = df_etapa2_clean.replace(r'^\s*$', None, regex=True)
+                        df_etapa2_clean = df_etapa2_clean.where(pd.notnull(df_etapa2_clean), None)
+
+                        engine_pg = obtener_motor_postgres()
+
+                        agregar_log("📦 [UPSERT ETAPA 2] Subiendo datos limpios a tabla temporal (staging)...")
+                        df_etapa2_clean.to_sql(
+                            "_staging_usuarios_etapa2",
+                            con=engine_pg,
+                            schema="Usuarios",
+                            if_exists="replace",
+                            index=False,
+                            chunksize=5000,
                         )
 
-                        if not col_predio:
-                            st.error("El archivo de Google Sheets no contiene la columna clave 'Predio_Viv'.")
-                        else:
-                            df_etapa2["Predio_Viv_clean"] = df_etapa2[col_predio].astype(str).str.strip()
-                            df_etapa2_clean = df_etapa2[
-                                ~df_etapa2["Predio_Viv_clean"].str.lower().isin(["none", "nan", "", "null", "0", "nat"])
-                            ].copy()
+                        agregar_log('⚡ [PASO 1/2] Actualizando registros existentes en "Usuarios"."usuarios_miaa_conmedidor"...')
 
-                            # Limpieza profunda en Pandas: reemplazar espacios, strings vacíos y nulos por None
-                            df_etapa2_clean = df_etapa2_clean.replace(r'^\s*$', None, regex=True)
-                            df_etapa2_clean = df_etapa2_clean.where(pd.notnull(df_etapa2_clean), None)
+                        query_update_existentes = text("""
+                            UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
+                            SET 
+                                "Cliente" = COALESCE(NULLIF(CAST(s."Cliente" AS TEXT), '')::INTEGER, u."Cliente"),
+                                "Nombre" = COALESCE(NULLIF(s."Nombre", ''), u."Nombre"),
+                                "Colonia" = COALESCE(NULLIF(s."Colonia", ''), u."Colonia"),
+                                "Domicilio" = COALESCE(NULLIF(s."Domicilio", ''), u."Domicilio"),
+                                "Estado_del" = COALESCE(NULLIF(s."Estado_del", ''), u."Estado_del"),
+                                "Situaci_n" = COALESCE(NULLIF(s."Situaci_n", ''), u."Situaci_n"),
+                                "Uso" = COALESCE(NULLIF(s."Uso", ''), u."Uso"),
+                                "Nivel" = COALESCE(NULLIF(s."Nivel", ''), u."Nivel"),
+                                "Tiene_medi" = COALESCE(NULLIF(s."Tiene_medi", ''), u."Tiene_medi"),
+                                "Marca" = COALESCE(NULLIF(s."Marca", ''), u."Marca"),
+                                "Modelo" = COALESCE(NULLIF(s."Modelo", ''), u."Modelo"),
+                                "Medidor" = COALESCE(NULLIF(CAST(s."Medidor" AS TEXT), ''), u."Medidor"),
+                                "Diametro_m" = COALESCE(NULLIF(CAST(s."Diametro_m" AS TEXT), ''), u."Diametro_m"),
+                                "Ubicaci_n" = COALESCE(NULLIF(s."Ubicaci_n", ''), u."Ubicaci_n"),
+                                "Primer_ins" = COALESCE(NULLIF(CAST(s."Primer_ins" AS TEXT), '')::DATE, u."Primer_ins"),
+                                "Cambios_de" = COALESCE(NULLIF(CAST(s."Cambios_de" AS TEXT), '')::DOUBLE PRECISION, u."Cambios_de"),
+                                "Lectura_Ac" = COALESCE(NULLIF(CAST(s."Lectura_Ac" AS TEXT), '')::DOUBLE PRECISION, u."Lectura_Ac"),
+                                "Latitud" = COALESCE(NULLIF(CAST(s."Latitud" AS TEXT), '')::DOUBLE PRECISION, u."Latitud"),
+                                "Longitud" = COALESCE(NULLIF(CAST(s."Longitud" AS TEXT), '')::DOUBLE PRECISION, u."Longitud"),
+                                "Plan_factu" = COALESCE(NULLIF(s."Plan_factu", ''), u."Plan_factu"),
+                                "Caso" = COALESCE(NULLIF(CAST(s."Caso" AS TEXT), '')::DOUBLE PRECISION, u."Caso"),
+                                "Ult_Anoma" = COALESCE(NULLIF(s."Ult_Anoma", ''), u."Ult_Anoma"),
+                                "Gran_consu" = COALESCE(NULLIF(s."Gran_consu", ''), u."Gran_consu"),
+                                "Es_macrome" = COALESCE(NULLIF(s."Es_macrome", ''), u."Es_macrome"),
+                                "Cmo_Factur" = COALESCE(NULLIF(CAST(s."Cmo_Factur" AS TEXT), '')::DOUBLE PRECISION, u."Cmo_Factur"),
+                                "Cmo_Promed" = COALESCE(NULLIF(CAST(s."Cmo_Promed" AS TEXT), '')::DOUBLE PRECISION, u."Cmo_Promed"),
+                                "_Serie" = COALESCE(NULLIF(s."_Serie", ''), u."_Serie"),
+                                "_Colonia" = COALESCE(NULLIF(s."_Colonia", ''), u."_Colonia"),
+                                "_Domicilio" = COALESCE(NULLIF(s."_Domicilio", ''), u."_Domicilio"),
+                                "_Instalador" = COALESCE(NULLIF(s."_Instalador", ''), u."_Instalador"),
+                                "_Tipo_instalador" = COALESCE(NULLIF(s."_Tipo_instalador", ''), u."_Tipo_instalador"),
+                                "_Lectura_actual" = COALESCE(NULLIF(CAST(s."_Lectura_actual" AS TEXT), '')::DOUBLE PRECISION, u."_Lectura_actual"),
+                                "_Fecha_registro" = COALESCE(NULLIF(CAST(s."_Fecha_registro" AS TEXT), '')::TIMESTAMP WITH TIME ZONE, u."_Fecha_registro"),
+                                "_Fecha_instalacion" = COALESCE(NULLIF(CAST(s."_Fecha_instalacion" AS TEXT), '')::TIMESTAMP WITH TIME ZONE, u."_Fecha_instalacion"),
+                                "_Ultima_actualizacion" = :tiempo_actual,
+                                geom = CASE 
+                                    WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%' 
+                                    THEN ST_GeomFromWKB(decode(TRIM(CAST(s.geom AS TEXT)), 'hex'))
+                                    WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND (TRIM(CAST(s.geom AS TEXT)) LIKE 'POINT%' OR TRIM(CAST(s.geom AS TEXT)) LIKE 'SRID=%') 
+                                    THEN ST_GeomFromText(TRIM(CAST(s.geom AS TEXT)))
+                                    ELSE u.geom 
+                                END,
+                                etapa = '2'
+                            FROM "Usuarios"."_staging_usuarios_etapa2" AS s
+                            WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean";
+                        """)
 
-                            engine_pg = obtener_motor_postgres()
-
-                            agregar_log(
-                                f"📦 [GOOGLE SHEETS] Se obtuvieron {len(df_etapa2_clean):,} registros válidos. Subiendo a tabla de paso (staging)..."
+                        with engine_pg.connect() as conn:
+                            res_up = conn.execute(
+                                query_update_existentes,
+                                {"tiempo_actual": datetime.now(ZONA_MEXICO)},
                             )
+                            conn.commit()
+                            filas_actualizadas = res_up.rowcount if hasattr(res_up, "rowcount") else 0
 
-                            df_etapa2_clean.to_sql(
-                                "_staging_usuarios_etapa2",
-                                con=engine_pg,
-                                schema="Usuarios",
-                                if_exists="replace",
-                                index=False,
-                                chunksize=5000,
-                            )
+                            agregar_log('⚡ [PASO 2/2] Insertando nuevos registros en "Usuarios"."usuarios_miaa_conmedidor"...')
 
-                            agregar_log('⚡ [PASO 1/2] Actualizando registros existentes en "Usuarios"."usuarios_miaa_conmedidor"...')
-
-                            query_update_existentes = text("""
-                                UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
-                                SET 
-                                    "Cliente" = COALESCE(NULLIF(CAST(s."Cliente" AS TEXT), '')::INTEGER, u."Cliente"),
-                                    "Nombre" = COALESCE(NULLIF(s."Nombre", ''), u."Nombre"),
-                                    "Colonia" = COALESCE(NULLIF(s."Colonia", ''), u."Colonia"),
-                                    "Domicilio" = COALESCE(NULLIF(s."Domicilio", ''), u."Domicilio"),
-                                    "Estado_del" = COALESCE(NULLIF(s."Estado_del", ''), u."Estado_del"),
-                                    "Situaci_n" = COALESCE(NULLIF(s."Situaci_n", ''), u."Situaci_n"),
-                                    "Uso" = COALESCE(NULLIF(s."Uso", ''), u."Uso"),
-                                    "Nivel" = COALESCE(NULLIF(s."Nivel", ''), u."Nivel"),
-                                    "Tiene_medi" = COALESCE(NULLIF(s."Tiene_medi", ''), u."Tiene_medi"),
-                                    "Marca" = COALESCE(NULLIF(s."Marca", ''), u."Marca"),
-                                    "Modelo" = COALESCE(NULLIF(s."Modelo", ''), u."Modelo"),
-                                    "Medidor" = COALESCE(NULLIF(CAST(s."Medidor" AS TEXT), ''), u."Medidor"),
-                                    "Diametro_m" = COALESCE(NULLIF(CAST(s."Diametro_m" AS TEXT), ''), u."Diametro_m"),
-                                    "Ubicaci_n" = COALESCE(NULLIF(s."Ubicaci_n", ''), u."Ubicaci_n"),
-                                    "Primer_ins" = COALESCE(NULLIF(CAST(s."Primer_ins" AS TEXT), '')::DATE, u."Primer_ins"),
-                                    "Cambios_de" = COALESCE(NULLIF(CAST(s."Cambios_de" AS TEXT), '')::DOUBLE PRECISION, u."Cambios_de"),
-                                    "Lectura_Ac" = COALESCE(NULLIF(CAST(s."Lectura_Ac" AS TEXT), '')::DOUBLE PRECISION, u."Lectura_Ac"),
-                                    "Latitud" = COALESCE(NULLIF(CAST(s."Latitud" AS TEXT), '')::DOUBLE PRECISION, u."Latitud"),
-                                    "Longitud" = COALESCE(NULLIF(CAST(s."Longitud" AS TEXT), '')::DOUBLE PRECISION, u."Longitud"),
-                                    "Plan_factu" = COALESCE(NULLIF(s."Plan_factu", ''), u."Plan_factu"),
-                                    "Caso" = COALESCE(NULLIF(CAST(s."Caso" AS TEXT), '')::DOUBLE PRECISION, u."Caso"),
-                                    "Ult_Anoma" = COALESCE(NULLIF(s."Ult_Anoma", ''), u."Ult_Anoma"),
-                                    "Gran_consu" = COALESCE(NULLIF(s."Gran_consu", ''), u."Gran_consu"),
-                                    "Es_macrome" = COALESCE(NULLIF(s."Es_macrome", ''), u."Es_macrome"),
-                                    "Cmo_Factur" = COALESCE(NULLIF(CAST(s."Cmo_Factur" AS TEXT), '')::DOUBLE PRECISION, u."Cmo_Factur"),
-                                    "Cmo_Promed" = COALESCE(NULLIF(CAST(s."Cmo_Promed" AS TEXT), '')::DOUBLE PRECISION, u."Cmo_Promed"),
-                                    "_Serie" = COALESCE(NULLIF(s."_Serie", ''), u."_Serie"),
-                                    "_Colonia" = COALESCE(NULLIF(s."_Colonia", ''), u."_Colonia"),
-                                    "_Domicilio" = COALESCE(NULLIF(s."_Domicilio", ''), u."_Domicilio"),
-                                    "_Instalador" = COALESCE(NULLIF(s."_Instalador", ''), u."_Instalador"),
-                                    "_Tipo_instalador" = COALESCE(NULLIF(s."_Tipo_instalador", ''), u."_Tipo_instalador"),
-                                    "_Lectura_actual" = COALESCE(NULLIF(CAST(s."_Lectura_actual" AS TEXT), '')::DOUBLE PRECISION, u."_Lectura_actual"),
-                                    "_Fecha_registro" = COALESCE(NULLIF(CAST(s."_Fecha_registro" AS TEXT), '')::TIMESTAMP WITH TIME ZONE, u."_Fecha_registro"),
-                                    "_Fecha_instalacion" = COALESCE(NULLIF(CAST(s."_Fecha_instalacion" AS TEXT), '')::TIMESTAMP WITH TIME ZONE, u."_Fecha_instalacion"),
-                                    "_Ultima_actualizacion" = :tiempo_actual,
-                                    geom = CASE 
+                            query_insert_nuevos = text("""
+                                INSERT INTO "Usuarios"."usuarios_miaa_conmedidor" (
+                                    "Predio_Viv", "Cliente", "Nombre", "Colonia", "Domicilio", "Estado_del", 
+                                    "Situaci_n", "Uso", "Nivel", "Tiene_medi", "Marca", "Modelo", "Medidor", 
+                                    "Diametro_m", "Ubicaci_n", "Primer_ins", "Cambios_de", "Lectura_Ac", 
+                                    "Latitud", "Longitud", "Plan_factu", "Caso", "Ult_Anoma", "Gran_consu", 
+                                    "Es_macrome", "Cmo_Factur", "Cmo_Promed", "_Serie", "_Colonia", "_Domicilio", 
+                                    "_Instalador", "_Tipo_instalador", "_Lectura_actual", "_Fecha_registro", 
+                                    "_Fecha_instalacion", "_Ultima_actualizacion", geom, etapa
+                                )
+                                SELECT 
+                                    s."Predio_Viv_clean",
+                                    NULLIF(CAST(s."Cliente" AS TEXT), '')::INTEGER,
+                                    NULLIF(s."Nombre", ''),
+                                    NULLIF(s."Colonia", ''),
+                                    NULLIF(s."Domicilio", ''),
+                                    NULLIF(s."Estado_del", ''),
+                                    NULLIF(s."Situaci_n", ''),
+                                    NULLIF(s."Uso", ''),
+                                    NULLIF(s."Nivel", ''),
+                                    NULLIF(s."Tiene_medi", ''),
+                                    NULLIF(s."Marca", ''),
+                                    NULLIF(s."Modelo", ''),
+                                    NULLIF(CAST(s."Medidor" AS TEXT), ''),
+                                    NULLIF(CAST(s."Diametro_m" AS TEXT), ''),
+                                    NULLIF(s."Ubicaci_n", ''),
+                                    NULLIF(CAST(s."Primer_ins" AS TEXT), '')::DATE,
+                                    NULLIF(CAST(s."Cambios_de" AS TEXT), '')::DOUBLE PRECISION,
+                                    NULLIF(CAST(s."Lectura_Ac" AS TEXT), '')::DOUBLE PRECISION,
+                                    NULLIF(CAST(s."Latitud" AS TEXT), '')::DOUBLE PRECISION,
+                                    NULLIF(CAST(s."Longitud" AS TEXT), '')::DOUBLE PRECISION,
+                                    NULLIF(s."Plan_factu", ''),
+                                    NULLIF(CAST(s."Caso" AS TEXT), '')::DOUBLE PRECISION,
+                                    NULLIF(s."Ult_Anoma", ''),
+                                    NULLIF(s."Gran_consu", ''),
+                                    NULLIF(s."Es_macrome", ''),
+                                    NULLIF(CAST(s."Cmo_Factur" AS TEXT), '')::DOUBLE PRECISION,
+                                    NULLIF(CAST(s."Cmo_Promed" AS TEXT), '')::DOUBLE PRECISION,
+                                    NULLIF(s."_Serie", ''),
+                                    NULLIF(s."_Colonia", ''),
+                                    NULLIF(s."_Domicilio", ''),
+                                    NULLIF(s."_Instalador", ''),
+                                    NULLIF(s."_Tipo_instalador", ''),
+                                    NULLIF(CAST(s."_Lectura_actual" AS TEXT), '')::DOUBLE PRECISION,
+                                    NULLIF(CAST(s."_Fecha_registro" AS TEXT), '')::TIMESTAMP WITH TIME ZONE,
+                                    NULLIF(CAST(s."_Fecha_instalacion" AS TEXT), '')::TIMESTAMP WITH TIME ZONE,
+                                    :tiempo_actual,
+                                    CASE 
                                         WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%' 
                                         THEN ST_GeomFromWKB(decode(TRIM(CAST(s.geom AS TEXT)), 'hex'))
                                         WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND (TRIM(CAST(s.geom AS TEXT)) LIKE 'POINT%' OR TRIM(CAST(s.geom AS TEXT)) LIKE 'SRID=%') 
                                         THEN ST_GeomFromText(TRIM(CAST(s.geom AS TEXT)))
-                                        ELSE u.geom 
+                                        ELSE NULL 
                                     END,
-                                    etapa = '2'
+                                    '2'
                                 FROM "Usuarios"."_staging_usuarios_etapa2" AS s
-                                WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean";
+                                WHERE NOT EXISTS (
+                                    SELECT 1 FROM "Usuarios"."usuarios_miaa_conmedidor" AS u
+                                    WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean"
+                                );
                             """)
 
-                            with engine_pg.connect() as conn:
-                                res_up = conn.execute(
-                                    query_update_existentes,
-                                    {"tiempo_actual": datetime.now(ZONA_MEXICO)},
-                                )
-                                conn.commit()
-                                filas_actualizadas = res_up.rowcount if hasattr(res_up, "rowcount") else 0
-
-                                agregar_log('⚡ [PASO 2/2] Insertando nuevos registros en "Usuarios"."usuarios_miaa_conmedidor"...')
-
-                                query_insert_nuevos = text("""
-                                    INSERT INTO "Usuarios"."usuarios_miaa_conmedidor" (
-                                        "Predio_Viv", "Cliente", "Nombre", "Colonia", "Domicilio", "Estado_del", 
-                                        "Situaci_n", "Uso", "Nivel", "Tiene_medi", "Marca", "Modelo", "Medidor", 
-                                        "Diametro_m", "Ubicaci_n", "Primer_ins", "Cambios_de", "Lectura_Ac", 
-                                        "Latitud", "Longitud", "Plan_factu", "Caso", "Ult_Anoma", "Gran_consu", 
-                                        "Es_macrome", "Cmo_Factur", "Cmo_Promed", "_Serie", "_Colonia", "_Domicilio", 
-                                        "_Instalador", "_Tipo_instalador", "_Lectura_actual", "_Fecha_registro", 
-                                        "_Fecha_instalacion", "_Ultima_actualizacion", geom, etapa
-                                    )
-                                    SELECT 
-                                        s."Predio_Viv_clean",
-                                        NULLIF(CAST(s."Cliente" AS TEXT), '')::INTEGER,
-                                        NULLIF(s."Nombre", ''),
-                                        NULLIF(s."Colonia", ''),
-                                        NULLIF(s."Domicilio", ''),
-                                        NULLIF(s."Estado_del", ''),
-                                        NULLIF(s."Situaci_n", ''),
-                                        NULLIF(s."Uso", ''),
-                                        NULLIF(s."Nivel", ''),
-                                        NULLIF(s."Tiene_medi", ''),
-                                        NULLIF(s."Marca", ''),
-                                        NULLIF(s."Modelo", ''),
-                                        NULLIF(CAST(s."Medidor" AS TEXT), ''),
-                                        NULLIF(CAST(s."Diametro_m" AS TEXT), ''),
-                                        NULLIF(s."Ubicaci_n", ''),
-                                        NULLIF(CAST(s."Primer_ins" AS TEXT), '')::DATE,
-                                        NULLIF(CAST(s."Cambios_de" AS TEXT), '')::DOUBLE PRECISION,
-                                        NULLIF(CAST(s."Lectura_Ac" AS TEXT), '')::DOUBLE PRECISION,
-                                        NULLIF(CAST(s."Latitud" AS TEXT), '')::DOUBLE PRECISION,
-                                        NULLIF(CAST(s."Longitud" AS TEXT), '')::DOUBLE PRECISION,
-                                        NULLIF(s."Plan_factu", ''),
-                                        NULLIF(CAST(s."Caso" AS TEXT), '')::DOUBLE PRECISION,
-                                        NULLIF(s."Ult_Anoma", ''),
-                                        NULLIF(s."Gran_consu", ''),
-                                        NULLIF(s."Es_macrome", ''),
-                                        NULLIF(CAST(s."Cmo_Factur" AS TEXT), '')::DOUBLE PRECISION,
-                                        NULLIF(CAST(s."Cmo_Promed" AS TEXT), '')::DOUBLE PRECISION,
-                                        NULLIF(s."_Serie", ''),
-                                        NULLIF(s."_Colonia", ''),
-                                        NULLIF(s."_Domicilio", ''),
-                                        NULLIF(s."_Instalador", ''),
-                                        NULLIF(s."_Tipo_instalador", ''),
-                                        NULLIF(CAST(s."_Lectura_actual" AS TEXT), '')::DOUBLE PRECISION,
-                                        NULLIF(CAST(s."_Fecha_registro" AS TEXT), '')::TIMESTAMP WITH TIME ZONE,
-                                        NULLIF(CAST(s."_Fecha_instalacion" AS TEXT), '')::TIMESTAMP WITH TIME ZONE,
-                                        :tiempo_actual,
-                                        CASE 
-                                            WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%' 
-                                            THEN ST_GeomFromWKB(decode(TRIM(CAST(s.geom AS TEXT)), 'hex'))
-                                            WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND (TRIM(CAST(s.geom AS TEXT)) LIKE 'POINT%' OR TRIM(CAST(s.geom AS TEXT)) LIKE 'SRID=%') 
-                                            THEN ST_GeomFromText(TRIM(CAST(s.geom AS TEXT)))
-                                            ELSE NULL 
-                                        END,
-                                        '2'
-                                    FROM "Usuarios"."_staging_usuarios_etapa2" AS s
-                                    WHERE NOT EXISTS (
-                                        SELECT 1 FROM "Usuarios"."usuarios_miaa_conmedidor" AS u
-                                        WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean"
-                                    );
-                                """)
-
-                                res_ins = conn.execute(
-                                    query_insert_nuevos,
-                                    {"tiempo_actual": datetime.now(ZONA_MEXICO)},
-                                )
-                                conn.commit()
-                                filas_insertadas = res_ins.rowcount if hasattr(res_ins, "rowcount") else 0
-
-                                conn.execute(text('DROP TABLE IF EXISTS "Usuarios"."_staging_usuarios_etapa2"'))
-                                conn.commit()
-
-                            agregar_log(
-                                f"🎉 [UPSERT ETAPA 2 EXITOSO] Actualizados: {filas_actualizadas:,} | Insertados: {filas_insertadas:,}."
+                            res_ins = conn.execute(
+                                query_insert_nuevos,
+                                {"tiempo_actual": datetime.now(ZONA_MEXICO)},
                             )
-                            st.success(
-                                f"¡Sincronización de Etapa 2 completada! "
-                                f"Registros actualizados: **{filas_actualizadas:,}** | "
-                                f"Nuevos registros insertados: **{filas_insertadas:,}**"
-                            )
-                            st.rerun()
+                            conn.commit()
+                            filas_insertadas = res_ins.rowcount if hasattr(res_ins, "rowcount") else 0
+
+                            conn.execute(text('DROP TABLE IF EXISTS "Usuarios"."_staging_usuarios_etapa2"'))
+                            conn.commit()
+
+                        agregar_log(f"🎉 [UPSERT ETAPA 2 EXITOSO] Actualizados: {filas_actualizadas:,} | Insertados: {filas_insertadas:,}.")
+                        st.success(
+                            f"¡Sincronización completada! "
+                            f"Registros actualizados: **{filas_actualizadas:,}** | "
+                            f"Nuevos predios insertados: **{filas_insertadas:,}**"
+                        )
+                        st.rerun()
 
                 except Exception as e:
-                    st.error(f"Error al ejecutar el UPSERT de la Etapa 2: {e}")
+                    st.error(f"Error al ejecutar la sincronización: {e}")
