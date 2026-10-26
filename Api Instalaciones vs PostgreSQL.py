@@ -1904,7 +1904,7 @@ with tab3:
         f"No se pudo cargar la vista previa de `medidores_inteligentes`: {e}"
     )
 
-    with tab4:
+with tab4:
   st.subheader("🛠️ Gestión de la tabla: usuarios_miaa_conmedidor (Etapa 2)")
   st.markdown(
       "Desde esta sección puedes **insertar nuevos registros o actualizar los"
