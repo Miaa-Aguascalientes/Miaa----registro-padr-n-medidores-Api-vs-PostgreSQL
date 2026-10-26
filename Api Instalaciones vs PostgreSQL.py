@@ -1909,7 +1909,7 @@ with tab4:
     st.markdown(
         "Desde esta sección puedes **insertar nuevos registros o actualizar los"
         ' existentes** en la tabla `"Usuarios"."usuarios_miaa_conmedidor"`'
-        " utilizando los campos de la hoja **`etapa2`** de Google Sheets sin eliminar información previa."
+        " utilizando los campos de la hoja **`etapa2`** de Google Sheets respetando sus tipos de datos exactos."
     )
 
     with st.container(border=True):
@@ -1918,7 +1918,7 @@ with tab4:
         )
         st.markdown(
             "Los registros cuyo **`Predio_Viv`** no exista se **insertarán como nuevos**, "
-            "y los existentes se **actualizarán** conservando sus datos intactos."
+            "y los existentes se **actualizarán** conservando y complementando su información."
         )
 
         confirmar_upsert_etapa2 = st.checkbox(
@@ -1960,7 +1960,6 @@ with tab4:
                                 ~df_etapa2["Predio_Viv_clean"].str.lower().isin(["none", "nan", "", "null", "0", "nat"])
                             ].copy()
 
-                            # Reemplazar valores nulos o texto basura por None en todo el DataFrame para evitar errores de tipo en SQL
                             df_etapa2_clean = df_etapa2_clean.where(pd.notnull(df_etapa2_clean), None)
 
                             engine_pg = obtener_motor_postgres()
@@ -1994,21 +1993,21 @@ with tab4:
                                     "Tiene_medi" = COALESCE(NULLIF(s."Tiene_medi", ''), u."Tiene_medi"),
                                     "Marca" = COALESCE(NULLIF(s."Marca", ''), u."Marca"),
                                     "Modelo" = COALESCE(NULLIF(s."Modelo", ''), u."Modelo"),
-                                    "Medidor" = COALESCE(NULLIF(CAST(s."Medidor" AS TEXT), '')::DOUBLE PRECISION, u."Medidor"),
-                                    "Diametro_m" = COALESCE(NULLIF(CAST(s."Diametro_m" AS TEXT), '')::DOUBLE PRECISION, u."Diametro_m"),
+                                    "Medidor" = COALESCE(NULLIF(CAST(s."Medidor" AS TEXT), ''), u."Medidor"),
+                                    "Diametro_m" = COALESCE(NULLIF(CAST(s."Diametro_m" AS TEXT), ''), u."Diametro_m"),
                                     "Ubicaci_n" = COALESCE(NULLIF(s."Ubicaci_n", ''), u."Ubicaci_n"),
-                                    "Primer_ins" = COALESCE(NULLIF(CAST(s."Primer_ins" AS TEXT), '')::TIMESTAMP WITH TIME ZONE, u."Primer_ins"),
-                                    "Cambios_de" = COALESCE(NULLIF(s."Cambios_de", ''), u."Cambios_de"),
+                                    "Primer_ins" = COALESCE(NULLIF(CAST(s."Primer_ins" AS TEXT), '')::DATE, u."Primer_ins"),
+                                    "Cambios_de" = COALESCE(NULLIF(CAST(s."Cambios_de" AS TEXT), '')::DOUBLE PRECISION, u."Cambios_de"),
                                     "Lectura_Ac" = COALESCE(NULLIF(CAST(s."Lectura_Ac" AS TEXT), '')::DOUBLE PRECISION, u."Lectura_Ac"),
                                     "Latitud" = COALESCE(NULLIF(CAST(s."Latitud" AS TEXT), '')::DOUBLE PRECISION, u."Latitud"),
                                     "Longitud" = COALESCE(NULLIF(CAST(s."Longitud" AS TEXT), '')::DOUBLE PRECISION, u."Longitud"),
                                     "Plan_factu" = COALESCE(NULLIF(s."Plan_factu", ''), u."Plan_factu"),
-                                    "Caso" = COALESCE(NULLIF(s."Caso", ''), u."Caso"),
+                                    "Caso" = COALESCE(NULLIF(CAST(s."Caso" AS TEXT), '')::DOUBLE PRECISION, u."Caso"),
                                     "Ult_Anoma" = COALESCE(NULLIF(s."Ult_Anoma", ''), u."Ult_Anoma"),
                                     "Gran_consu" = COALESCE(NULLIF(s."Gran_consu", ''), u."Gran_consu"),
                                     "Es_macrome" = COALESCE(NULLIF(s."Es_macrome", ''), u."Es_macrome"),
-                                    "Cmo_Factur" = COALESCE(NULLIF(s."Cmo_Factur", ''), u."Cmo_Factur"),
-                                    "Cmo_Promed" = COALESCE(NULLIF(s."Cmo_Promed", ''), u."Cmo_Promed"),
+                                    "Cmo_Factur" = COALESCE(NULLIF(CAST(s."Cmo_Factur" AS TEXT), '')::DOUBLE PRECISION, u."Cmo_Factur"),
+                                    "Cmo_Promed" = COALESCE(NULLIF(CAST(s."Cmo_Promed" AS TEXT), '')::DOUBLE PRECISION, u."Cmo_Promed"),
                                     "_Serie" = COALESCE(NULLIF(s."_Serie", ''), u."_Serie"),
                                     "_Colonia" = COALESCE(NULLIF(s."_Colonia", ''), u."_Colonia"),
                                     "_Domicilio" = COALESCE(NULLIF(s."_Domicilio", ''), u."_Domicilio"),
@@ -2018,6 +2017,13 @@ with tab4:
                                     "_Fecha_registro" = COALESCE(NULLIF(CAST(s."_Fecha_registro" AS TEXT), '')::TIMESTAMP WITH TIME ZONE, u."_Fecha_registro"),
                                     "_Fecha_instalacion" = COALESCE(NULLIF(CAST(s."_Fecha_instalacion" AS TEXT), '')::TIMESTAMP WITH TIME ZONE, u."_Fecha_instalacion"),
                                     "_Ultima_actualizacion" = :tiempo_actual,
+                                    geom = CASE 
+                                        WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%' 
+                                        THEN ST_GeomFromWKB(decode(TRIM(CAST(s.geom AS TEXT)), 'hex'))
+                                        WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND (TRIM(CAST(s.geom AS TEXT)) LIKE 'POINT%' OR TRIM(CAST(s.geom AS TEXT)) LIKE 'SRID=%') 
+                                        THEN ST_GeomFromText(TRIM(CAST(s.geom AS TEXT)))
+                                        ELSE u.geom 
+                                    END,
                                     etapa = '2'
                                 FROM "Usuarios"."_staging_usuarios_etapa2" AS s
                                 WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean";
@@ -2041,7 +2047,7 @@ with tab4:
                                         "Latitud", "Longitud", "Plan_factu", "Caso", "Ult_Anoma", "Gran_consu", 
                                         "Es_macrome", "Cmo_Factur", "Cmo_Promed", "_Serie", "_Colonia", "_Domicilio", 
                                         "_Instalador", "_Tipo_instalador", "_Lectura_actual", "_Fecha_registro", 
-                                        "_Fecha_instalacion", "_Ultima_actualizacion", etapa
+                                        "_Fecha_instalacion", "_Ultima_actualizacion", geom, etapa
                                     )
                                     SELECT 
                                         s."Predio_Viv_clean",
@@ -2056,21 +2062,21 @@ with tab4:
                                         NULLIF(s."Tiene_medi", ''),
                                         NULLIF(s."Marca", ''),
                                         NULLIF(s."Modelo", ''),
-                                        NULLIF(CAST(s."Medidor" AS TEXT), '')::DOUBLE PRECISION,
-                                        NULLIF(CAST(s."Diametro_m" AS TEXT), '')::DOUBLE PRECISION,
+                                        NULLIF(CAST(s."Medidor" AS TEXT), ''),
+                                        NULLIF(CAST(s."Diametro_m" AS TEXT), ''),
                                         NULLIF(s."Ubicaci_n", ''),
-                                        NULLIF(CAST(s."Primer_ins" AS TEXT), '')::TIMESTAMP WITH TIME ZONE,
-                                        NULLIF(s."Cambios_de", ''),
+                                        NULLIF(CAST(s."Primer_ins" AS TEXT), '')::DATE,
+                                        NULLIF(CAST(s."Cambios_de" AS TEXT), '')::DOUBLE PRECISION,
                                         NULLIF(CAST(s."Lectura_Ac" AS TEXT), '')::DOUBLE PRECISION,
                                         NULLIF(CAST(s."Latitud" AS TEXT), '')::DOUBLE PRECISION,
                                         NULLIF(CAST(s."Longitud" AS TEXT), '')::DOUBLE PRECISION,
                                         NULLIF(s."Plan_factu", ''),
-                                        NULLIF(s."Caso", ''),
+                                        NULLIF(CAST(s."Caso" AS TEXT), '')::DOUBLE PRECISION,
                                         NULLIF(s."Ult_Anoma", ''),
                                         NULLIF(s."Gran_consu", ''),
                                         NULLIF(s."Es_macrome", ''),
-                                        NULLIF(s."Cmo_Factur", ''),
-                                        NULLIF(s."Cmo_Promed", ''),
+                                        NULLIF(CAST(s."Cmo_Factur" AS TEXT), '')::DOUBLE PRECISION,
+                                        NULLIF(CAST(s."Cmo_Promed" AS TEXT), '')::DOUBLE PRECISION,
                                         NULLIF(s."_Serie", ''),
                                         NULLIF(s."_Colonia", ''),
                                         NULLIF(s."_Domicilio", ''),
@@ -2080,6 +2086,13 @@ with tab4:
                                         NULLIF(CAST(s."_Fecha_registro" AS TEXT), '')::TIMESTAMP WITH TIME ZONE,
                                         NULLIF(CAST(s."_Fecha_instalacion" AS TEXT), '')::TIMESTAMP WITH TIME ZONE,
                                         :tiempo_actual,
+                                        CASE 
+                                            WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%' 
+                                            THEN ST_GeomFromWKB(decode(TRIM(CAST(s.geom AS TEXT)), 'hex'))
+                                            WHEN s.geom IS NOT NULL AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN') AND (TRIM(CAST(s.geom AS TEXT)) LIKE 'POINT%' OR TRIM(CAST(s.geom AS TEXT)) LIKE 'SRID=%') 
+                                            THEN ST_GeomFromText(TRIM(CAST(s.geom AS TEXT)))
+                                            ELSE NULL 
+                                        END,
                                         '2'
                                     FROM "Usuarios"."_staging_usuarios_etapa2" AS s
                                     WHERE NOT EXISTS (
@@ -2095,7 +2108,6 @@ with tab4:
                                 conn.commit()
                                 filas_insertadas = res_ins.rowcount if hasattr(res_ins, "rowcount") else 0
 
-                                # Limpieza de la tabla temporal staging
                                 conn.execute(text('DROP TABLE IF EXISTS "Usuarios"."_staging_usuarios_etapa2"'))
                                 conn.commit()
 
