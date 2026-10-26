@@ -1637,10 +1637,7 @@ with tab3:
                         """)
 
               with engine_pg.connect() as conn_up:
-                result_up = conn_up.connect().execute(
-                    query_update_sheets
-                )  # o conn_up.execute(query_update_sheets)
-                # Nota: mantenemos conn_up.execute según tu estructura
+                result_up = conn_up.execute(query_update_sheets)
                 conn_up.commit()
                 filas_actualizadas = (
                     result_up.rowcount if hasattr(result_up, "rowcount") else 0
