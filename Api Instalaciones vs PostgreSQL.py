@@ -1909,7 +1909,7 @@ with tab4:
     st.markdown(
         "Desde esta sección puedes **insertar nuevos registros o actualizar los"
         ' existentes** en la tabla `"Usuarios"."usuarios_miaa_conmedidor"`'
-        " utilizando los campos de la hoja **`etapa2`** de Google Sheets respetando sus tipos de datos exactos."
+        " utilizando los campos de la hoja **`etapa2`** de Google Sheets de forma totalmente segura."
     )
 
     with st.container(border=True):
@@ -1960,6 +1960,8 @@ with tab4:
                                 ~df_etapa2["Predio_Viv_clean"].str.lower().isin(["none", "nan", "", "null", "0", "nat"])
                             ].copy()
 
+                            # Limpieza profunda en Pandas: reemplazar espacios, strings vacíos y nulos por None
+                            df_etapa2_clean = df_etapa2_clean.replace(r'^\s*$', None, regex=True)
                             df_etapa2_clean = df_etapa2_clean.where(pd.notnull(df_etapa2_clean), None)
 
                             engine_pg = obtener_motor_postgres()
