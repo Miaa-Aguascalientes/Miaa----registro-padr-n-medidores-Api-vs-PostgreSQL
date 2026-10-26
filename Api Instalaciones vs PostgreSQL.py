@@ -915,10 +915,11 @@ st.markdown("<div style='margin-bottom: 10px;'></div>", unsafe_allow_html=True)
 # ==========================================
 # 9. PESTAÑAS DE LA APLICACIÓN
 # ==========================================
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "🚰 Panel Principal y Gestión",
     "📋 Tablas de Datos (PostgreSQL y API)",
     "🛠️ Gestión Medidores Inteligentes",
+    "🛠️ Gestión Usuarios MIAA (Etapa 2)",
 ])
 
 with tab1:
@@ -1902,3 +1903,236 @@ with tab3:
     st.warning(
         f"No se pudo cargar la vista previa de `medidores_inteligentes`: {e}"
     )
+
+    with tab4:
+  st.subheader("🛠️ Gestión de la tabla: usuarios_miaa_conmedidor (Etapa 2)")
+  st.markdown(
+      "Desde esta sección puedes **insertar nuevos registros o actualizar los"
+      ' existentes** en la tabla `"Usuarios"."usuarios_miaa_conmedidor"`'
+      " utilizando los datos almacenados en la hoja **`etapa2`** de Google"
+      " Sheets."
+  )
+
+  with st.container(border=True):
+    st.markdown(
+        "#### 📊 Sincronizar (UPSERT) desde Google Sheets (`etapa2`)"
+    )
+    st.markdown(
+        "Los registros cuyo **`Predio_Viv`** no exista en la base de datos se"
+        " **insertarán como nuevos**, mientras que aquellos que ya existan"
+        " serán **actualizados** con la nueva información del Sheet."
+    )
+
+    confirmar_upsert_etapa2 = st.checkbox(
+        "⚠️ Confirmo que deseo insertar/actualizar registros en"
+        " `usuarios_miaa_conmedidor` con la hoja `etapa2`",
+        key="chk_confirmar_upsert_etapa2",
+    )
+
+    if st.button(
+        "Ejecutar Sincronización (UPSERT) Etapa 2",
+        type="primary",
+        key="btn_ejecutar_upsert_etapa2",
+        use_container_width=True,
+    ):
+      if not confirmar_upsert_etapa2:
+        st.error(
+            "Debes marcar la casilla de confirmación para ejecutar la"
+            " sincronización."
+        )
+      else:
+        try:
+          # URL del CSV de exportación directa de la hoja 'etapa2' (gid=1668332296)
+          sheet_etapa2_csv_url = "https://docs.google.com/spreadsheets/d/1Ovj2DZ19Y8H4BtamnVwB71c2dyHC3dyVmau-tMbWre8/export?format=csv&gid=1668332296"
+
+          agregar_log(
+              "📥 [GOOGLE SHEETS] Descargando datos de la hoja 'etapa2'..."
+          )
+          df_etapa2 = pd.read_csv(sheet_etapa2_csv_url)
+
+          if df_etapa2.empty:
+            st.error(
+                "No se pudieron obtener datos desde el Google Sheet o la hoja"
+                " está vacía."
+            )
+          else:
+            # Normalizar encabezados eliminando espacios y ajustando nombres de columnas
+            df_etapa2.columns = df_etapa2.columns.str.strip()
+
+            # Mapeo flexible de columnas por si varían nombres en el Sheet
+            mapa_columnas_etapa2 = {
+                "predio_viv": "Predio_Viv",
+                "predioviv": "Predio_Viv",
+                "PredioViv": "Predio_Viv",
+                "cliente": "Cliente",
+                "serie": "_Serie",
+                "Serie": "_Serie",
+                "colonia": "_Colonia",
+                "Colonia": "_Colonia",
+                "domicilio": "_Domicilio",
+                "Domicilio": "_Domicilio",
+                "instalador": "_Instalador",
+                "Instalador": "_Instalador",
+                "tipo_instalador": "_Tipo_instalador",
+                "lectura_actual": "_Lectura_actual",
+                "fecha_registro": "_Fecha_registro",
+                "fecha_instalacion": "_Fecha_instalacion",
+            }
+            df_etapa2.rename(columns=mapa_columnas_etapa2, inplace=True)
+
+            col_predio = next(
+                (c for c in ["Predio_Viv", "predio"] if c in df_etapa2.columns),
+                None,
+            )
+
+            if not col_predio:
+              st.error(
+                  "El archivo de Google Sheets no contiene la columna"
+                  " clave 'Predio_Viv' o 'predio'."
+              )
+            else:
+              df_etapa2["Predio_Viv_clean"] = (
+                  df_etapa2[col_predio].astype(str).str.strip()
+              )
+              df_etapa2_clean = df_etapa2[
+                  ~df_etapa2["Predio_Viv_clean"].str.lower().isin(
+                      ["none", "nan", "", "null", "0"]
+                  )
+              ].copy()
+
+              engine_pg = obtener_motor_postgres()
+
+              agregar_log(
+                  "📦 [GOOGLE SHEETS] Se obtuvieron"
+                  f" {len(df_etapa2_clean):,} registros válidos. Subiendo a"
+                  " tabla temporal (staging)..."
+              )
+
+              # Subir datos a tabla temporal
+              df_etapa2_clean.to_sql(
+                  "_staging_usuarios_etapa2",
+                  con=engine_pg,
+                  schema="Usuarios",
+                  if_exists="replace",
+                  index=False,
+                  chunksize=5000,
+              )
+
+              agregar_log(
+                  "⚡ [PASO 1/2] Actualizando registros existentes en"
+                  ' "Usuarios"."usuarios_miaa_conmedidor"...'
+              )
+
+              # 1. UPDATE de registros existentes
+              query_update_existentes = text("""
+                            UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
+                            SET 
+                                "_Serie" = COALESCE(s."_Serie", s.serie, u."_Serie"),
+                                "_Colonia" = COALESCE(s."_Colonia", s.colonia, u."_Colonia"),
+                                "_Domicilio" = COALESCE(s."_Domicilio", s.domicilio, u."_Domicilio"),
+                                "_Instalador" = COALESCE(s."_Instalador", s.instalador, u."_Instalador"),
+                                "_Tipo_instalador" = COALESCE(s."_Tipo_instalador", s.tipo_instalador, u."_Tipo_instalador"),
+                                "_Lectura_actual" = CASE 
+                                    WHEN s."_Lectura_actual" IS NOT NULL AND TRIM(CAST(s."_Lectura_actual" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                                    THEN CAST(s."_Lectura_actual" AS DOUBLE PRECISION)
+                                    ELSE u."_Lectura_actual"
+                                END,
+                                "_Fecha_registro" = CASE 
+                                    WHEN s."_Fecha_registro" IS NOT NULL AND TRIM(CAST(s."_Fecha_registro" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                                    THEN CAST(s."_Fecha_registro" AS TIMESTAMP WITH TIME ZONE)
+                                    ELSE u."_Fecha_registro"
+                                END,
+                                "_Fecha_instalacion" = CASE 
+                                    WHEN s."_Fecha_instalacion" IS NOT NULL AND TRIM(CAST(s."_Fecha_instalacion" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                                    THEN CAST(s."_Fecha_instalacion" AS TIMESTAMP WITH TIME ZONE)
+                                    ELSE u."_Fecha_instalacion"
+                                END,
+                                "_Ultima_actualizacion" = :tiempo_actual,
+                                etapa = '2'
+                            FROM "Usuarios"."_staging_usuarios_etapa2" AS s
+                            WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean";
+                        """)
+
+              with engine_pg.connect() as conn:
+                res_up = conn.execute(
+                    query_update_existentes,
+                    {"tiempo_actual": datetime.now(ZONA_MEXICO)},
+                )
+                conn.commit()
+                filas_actualizadas = (
+                    res_up.rowcount if hasattr(res_up, "rowcount") else 0
+                )
+
+                agregar_log(
+                    "⚡ [PASO 2/2] Insertando nuevos registros inexistentes en"
+                    ' "Usuarios"."usuarios_miaa_conmedidor"...'
+                )
+
+                # 2. INSERT de registros completamente nuevos que no existían
+                query_insert_nuevos = text("""
+                            INSERT INTO "Usuarios"."usuarios_miaa_conmedidor" (
+                                "Predio_Viv",
+                                "Cliente",
+                                "_Serie",
+                                "_Colonia",
+                                "_Domicilio",
+                                "_Instalador",
+                                "_Tipo_instalador",
+                                "_Lectura_actual",
+                                "_Fecha_registro",
+                                "_Fecha_instalacion",
+                                "_Ultima_actualizacion",
+                                etapa
+                            )
+                            SELECT 
+                                s."Predio_Viv_clean",
+                                CASE WHEN s."Cliente" IS NOT NULL AND TRIM(CAST(s."Cliente" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Cliente" AS INTEGER) ELSE NULL END,
+                                COALESCE(s."_Serie", s.serie),
+                                COALESCE(s."_Colonia", s.colonia),
+                                COALESCE(s."_Domicilio", s.domicilio),
+                                COALESCE(s."_Instalador", s.instalador),
+                                COALESCE(s."_Tipo_instalador", s.tipo_instalador),
+                                CASE WHEN s."_Lectura_actual" IS NOT NULL AND TRIM(CAST(s."_Lectura_actual" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."_Lectura_actual" AS DOUBLE PRECISION) ELSE NULL END,
+                                CASE WHEN s."_Fecha_registro" IS NOT NULL AND TRIM(CAST(s."_Fecha_registro" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."_Fecha_registro" AS TIMESTAMP WITH TIME ZONE) ELSE NULL END,
+                                CASE WHEN s."_Fecha_instalacion" IS NOT NULL AND TRIM(CAST(s."_Fecha_instalacion" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."_Fecha_instalacion" AS TIMESTAMP WITH TIME ZONE) ELSE NULL END,
+                                :tiempo_actual,
+                                '2'
+                            FROM "Usuarios"."_staging_usuarios_etapa2" AS s
+                            WHERE NOT EXISTS (
+                                SELECT 1 FROM "Usuarios"."usuarios_miaa_conmedidor" AS u
+                                WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean"
+                            );
+                        """)
+
+                res_ins = conn.execute(
+                    query_insert_nuevos,
+                    {"tiempo_actual": datetime.now(ZONA_MEXICO)},
+                )
+                conn.commit()
+                filas_insertadas = (
+                    res_ins.rowcount if hasattr(res_ins, "rowcount") else 0
+                )
+
+                # Limpieza de la tabla temporal
+                conn.execute(
+                    text(
+                        'DROP TABLE IF EXISTS'
+                        ' "Usuarios"."_staging_usuarios_etapa2"'
+                    )
+                )
+                conn.commit()
+
+              agregar_log(
+                  "🎉 [UPSERT ETAPA 2 EXITOSO] Proceso finalizado."
+                  f" Actualizados: {filas_actualizadas:,} | Insertados:"
+                  f" {filas_insertadas:,}."
+              )
+              st.success(
+                  f"¡Sincronización de Etapa 2 completada exitosamente! "
+                  f"Registros actualizados: **{filas_actualizadas:,}** | "
+                  f"Nuevos registros insertados: **{filas_insertadas:,}**"
+              )
+              st.rerun()
+
+        except Exception as e:
+          st.error(f"Error al ejecutar el UPSERT de la Etapa 2: {e}")
