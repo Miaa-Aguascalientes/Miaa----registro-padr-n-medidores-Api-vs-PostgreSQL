@@ -1496,6 +1496,187 @@ with tab3:
       " `Medidores` en tu base de datos PostgreSQL."
   )
 
+  # ==========================================
+  # SECCIÓN 1: ACTUALIZAR DESDE GOOGLE SHEETS (HOJA ETAPA1)
+  # ==========================================
+  with st.container(border=True):
+    st.markdown(
+        "#### 📊 Actualizar Registros de `medidores_inteligentes` desde Google"
+        " Sheets (`etapa1`)"
+    )
+    st.markdown(
+        "Esta función lee los datos del Google Sheet en la hoja **`etapa1`**"
+        " y actualiza de forma masiva los campos correspondientes en la tabla"
+        ' `"Medidores"."medidores_inteligentes"` realizando la coincidencia'
+        " por el campo **`predio`**."
+    )
+
+    confirmar_update_sheets = st.checkbox(
+        "⚠️ Confirmo que deseo actualizar la tabla `medidores_inteligentes` con"
+        " los datos cargados desde el Google Sheet",
+        key="chk_confirmar_update_sheets",
+    )
+
+    if st.button(
+        "Ejecutar Actualización desde Google Sheets",
+        type="primary",
+        key="btn_ejecutar_update_sheets",
+        use_container_width=True,
+    ):
+      if not confirmar_update_sheets:
+        st.error(
+            "Debes marcar la casilla de confirmación para ejecutar la"
+            " actualización desde Google Sheets."
+        )
+      else:
+        try:
+          sheet_csv_url = "https://docs.google.com/spreadsheets/d/1Ovj2DZ19Y8H4BtamnVwB71c2dyHC3dyVmau-tMbWre8/export?format=csv&gid=632917467"
+
+          agregar_log(
+              "📥 [GOOGLE SHEETS] Descargando datos de la hoja 'etapa1'..."
+          )
+          df_sheets = pd.read_csv(sheet_csv_url)
+
+          if df_sheets.empty:
+            st.error(
+                "No se pudieron obtener datos desde el Google Sheet o la hoja"
+                " está vacía."
+            )
+          else:
+            df_sheets.columns = df_sheets.columns.str.strip().str.lower()
+
+            renombrar_columnas = {
+                "en_columpi": "en_columpi",
+                "en_columpio": "en_columpi",
+                "nivel tarifario": "nivel_tarifario",
+                "nivel_tarifario": "nivel_tarifario",
+                "tipo de giro": "tipo_de_giro",
+                "tipo_de_giro": "tipo_de_giro",
+                "primer instalación": "primer_instalacion",
+                "primer instalacion": "primer_instalacion",
+            }
+            df_sheets.rename(columns=renombrar_columnas, inplace=True)
+
+            if "predio" not in df_sheets.columns:
+              st.error(
+                  "El archivo de Google Sheets no contiene la columna"
+                  " clave 'predio'."
+              )
+            else:
+              engine_pg = obtener_motor_postgres()
+
+              df_sheets_clean = df_sheets.dropna(subset=["predio"]).copy()
+              df_sheets_clean["predio_clean"] = (
+                  df_sheets_clean["predio"].astype(str).str.strip()
+              )
+
+              agregar_log(
+                  "📦 [GOOGLE SHEETS] Se obtuvieron"
+                  f" {len(df_sheets_clean):,} registros. Subiendo a staging..."
+              )
+
+              df_sheets_clean.to_sql(
+                  "_staging_medidores_sheets",
+                  con=engine_pg,
+                  schema="Medidores",
+                  if_exists="replace",
+                  index=False,
+                  chunksize=5000,
+              )
+
+              agregar_log(
+                  "⚡ [DB UPDATE] Ejecutando UPDATE masivo en"
+                  ' "Medidores"."medidores_inteligentes"...'
+              )
+
+              query_update_sheets = text("""
+                            UPDATE "Medidores"."medidores_inteligentes" AS m
+                            SET 
+                                geom = CASE 
+                                    WHEN s.geom IS NOT NULL 
+                                         AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN')
+                                         AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%'
+                                    THEN ST_GeomFromWKB(decode(TRIM(CAST(s.geom AS TEXT)), 'hex'))
+                                    WHEN s.geom IS NOT NULL 
+                                         AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN')
+                                         AND (TRIM(CAST(s.geom AS TEXT)) LIKE 'POINT%' OR TRIM(CAST(s.geom AS TEXT)) LIKE 'SRID=%')
+                                    THEN ST_GeomFromText(TRIM(CAST(s.geom AS TEXT)))
+                                    ELSE m.geom 
+                                END,
+                                cliente = CASE 
+                                    WHEN s.cliente IS NOT NULL AND TRIM(CAST(s.cliente AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                                    THEN CAST(s.cliente AS INTEGER) ELSE m.cliente END,
+                                serie = CASE 
+                                    WHEN s.serie IS NOT NULL AND TRIM(CAST(s.serie AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                                    THEN CAST(s.serie AS BIGINT) ELSE m.serie END,
+                                fecha_lev = COALESCE(s.fecha_lev, m.fecha_lev),
+                                domicilio = COALESCE(s.domicilio, m.domicilio),
+                                colonia = COALESCE(s.colonia, m.colonia),
+                                accesible = COALESCE(s.accesible, m.accesible),
+                                en_columpi = COALESCE(s.en_columpi, m.en_columpi),
+                                estatus = COALESCE(s.estatus, m.estatus),
+                                marca = COALESCE(s.marca, m.marca),
+                                modelo = COALESCE(s.modelo, m.modelo),
+                                diametro_m = COALESCE(s.diametro_m, m.diametro_m),
+                                observacio = COALESCE(s.observacio, m.observacio),
+                                nom_sup = COALESCE(s.nom_sup, m.nom_sup),
+                                ult_editor = COALESCE(s.ult_editor, m.ult_editor),
+                                fecha_act = CASE 
+                                    WHEN s.fecha_act IS NOT NULL AND TRIM(CAST(s.fecha_act AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                                    THEN CAST(s.fecha_act AS TIMESTAMP WITH TIME ZONE) ELSE m.fecha_act END,
+                                "nivel tarifario" = COALESCE(s.nivel_tarifario, m."nivel tarifario"),
+                                "tipo de giro" = COALESCE(s.tipo_de_giro, m."tipo de giro"),
+                                "primer instalación" = CASE 
+                                    WHEN s.primer_instalacion IS NOT NULL AND TRIM(CAST(s.primer_instalacion AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                                    THEN CAST(s.primer_instalacion AS TIMESTAMP WITH TIME ZONE) ELSE m."primer instalación" END,
+                                obs = COALESCE(s.obs, m.obs),
+                                etapa = COALESCE(CAST(s.etapa AS TEXT), m.etapa)
+                            FROM "Medidores"."_staging_medidores_sheets" AS s
+                            WHERE TRIM(CAST(m.predio AS TEXT)) = s.predio_clean
+                              AND s.predio_clean NOT IN ('none', 'nan', '', 'nat', '0', 'null', 'None', 'NaN');
+                        """)
+
+              with engine_pg.connect() as conn_up:
+                result_up = conn_up.connect().execute(
+                    query_update_sheets
+                )  # o conn_up.execute(query_update_sheets)
+                # Nota: mantenemos conn_up.execute según tu estructura
+                conn_up.commit()
+                filas_actualizadas = (
+                    result_up.rowcount if hasattr(result_up, "rowcount") else 0
+                )
+
+                conn_up.execute(
+                    text(
+                        'DROP TABLE IF EXISTS'
+                        ' "Medidores"."_staging_medidores_sheets"'
+                    )
+                )
+                conn_up.commit()
+
+              agregar_log(
+                  "🎉 [ACTUALIZACIÓN COMPLETADA] Registros actualizados en"
+                  f" medidores_inteligentes: {filas_actualizadas:,} desde Google"
+                  " Sheets."
+              )
+              st.success(
+                  "¡Actualización completada exitosamente! Registros"
+                  f" actualizados: **{filas_actualizadas:,}**"
+              )
+              st.rerun()
+
+        except Exception as e:
+          st.error(
+              f"Error al actualizar la tabla desde Google Sheets: {e}"
+          )
+
+  st.markdown(
+      "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
+  )
+
+  # ==========================================
+  # SECCIÓN 2: ASIGNAR ETAPA 1 A TODOS LOS REGISTROS
+  # ==========================================
   with st.container(border=True):
     st.markdown("#### 🔢 Asignar Etapa 1 a todos los registros")
     st.markdown(
@@ -1548,6 +1729,9 @@ with tab3:
       "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
   )
 
+  # ==========================================
+  # SECCIÓN 3: SINCRONIZAR ETAPA HACIA USUARIOS MIAA
+  # ==========================================
   with st.container(border=True):
     st.markdown(
         "#### 🔗 Sincronizar Etapa desde `medidores_inteligentes` hacia"
@@ -1561,7 +1745,7 @@ with tab3:
     )
 
     confirmar_join_etapa = st.checkbox(
-        "⚠ Confirmo que deseo actualizar el campo etapa en"
+        "⚠️ Confirmo que deseo actualizar el campo etapa en"
         " `usuarios_miaa_conmedidor` basado en la coincidencia de predio",
         key="chk_confirmar_join_etapa",
     )
@@ -1614,13 +1798,15 @@ with tab3:
       "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
   )
 
+  # ==========================================
+  # SECCIÓN 4: DIAGNÓSTICO DE PREDIOS NO CRUZADOS
+  # ==========================================
   with st.container(border=True):
     st.markdown("#### 🔍 Diagnóstico de Predios No Insertados / No Cruzados")
     st.markdown(
         "Identifica qué registros de `medidores_inteligentes` **no encontraron"
         " coincidencia** en `usuarios_miaa_conmedidor` y descubre la razón"
-        " exacta por la que no se insertaron (por ejemplo: predio nulo,"
-        " vacío, espacios en blanco o inexistente en la tabla destino)."
+        " exacta por la que no se insertaron."
     )
 
     if st.button(
@@ -1682,6 +1868,10 @@ with tab3:
   st.markdown(
       "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
   )
+
+  # ==========================================
+  # SECCIÓN 5: VISTA PREVIA
+  # ==========================================
   st.markdown("#### 👁️ Vista previa de registros: `medidores_inteligentes`")
 
   try:
@@ -1712,6 +1902,6 @@ with tab3:
     else:
       st.warning("La tabla `medidores_inteligentes` está actualmente vacía.")
   except Exception as e:
-      st.warning(
-          f"No se pudo cargar la vista previa de `medidores_inteligentes`: {e}"
-      )
+    st.warning(
+        f"No se pudo cargar la vista previa de `medidores_inteligentes`: {e}"
+    )
