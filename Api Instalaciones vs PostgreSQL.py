@@ -1544,8 +1544,19 @@ with tab3:
                 " está vacía."
             )
           else:
-            # Normalizar nombres de columnas eliminando espacios
-            df_sheets.columns = df_sheets.columns.str.strip()
+            # 1. Normalizar nombres de columnas en Pandas para evitar errores de sintaxis SQL
+            df_sheets.columns = df_sheets.columns.str.strip().str.lower()
+
+            # Mapa de renombrado para asegurar coincidencia exacta con PostgreSQL
+            renombrar_columnas = {
+                "en_columpi": "en_columpi",
+                "en_columpio": "en_columpi",
+                "nivel tarifario": "nivel_tarifario",
+                "tipo de giro": "tipo_de_giro",
+                "primer instalación": "primer_instalacion",
+                "primer instalacion": "primer_instalacion",
+            }
+            df_sheets.rename(columns=renombrar_columnas, inplace=True)
 
             if "predio" not in df_sheets.columns:
               st.error(
@@ -1582,14 +1593,14 @@ with tab3:
                   ' "Medidores"."medidores_inteligentes"...'
               )
 
-              # Query de UPDATE masivo con casting PostGIS seguro para el campo geom
+              # 2. Query de UPDATE masivo limpia de comentarios y referenciando columnas ya normalizadas
               query_update_sheets = text("""
                             UPDATE "Medidores"."medidores_inteligentes" AS m
                             SET 
                                 geom = CASE 
                                     WHEN s.geom IS NOT NULL 
                                          AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN')
-                                         AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%' -- Si viene en Hex WKB
+                                         AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%'
                                     THEN ST_GeomFromWKB(decode(TRIM(CAST(s.geom AS TEXT)), 'hex'))
                                     WHEN s.geom IS NOT NULL 
                                          AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN')
@@ -1607,7 +1618,7 @@ with tab3:
                                 domicilio = COALESCE(s.domicilio, m.domicilio),
                                 colonia = COALESCE(s.colonia, m.colonia),
                                 accesible = COALESCE(s.accesible, m.accesible),
-                                en_columpi = COALESCE(s."en_Columpi", s.en_columpi, m.en_columpi),
+                                en_columpi = COALESCE(s.en_columpi, m.en_columpi),
                                 estatus = COALESCE(s.estatus, m.estatus),
                                 marca = COALESCE(s.marca, m.marca),
                                 modelo = COALESCE(s.modelo, m.modelo),
@@ -1618,11 +1629,11 @@ with tab3:
                                 fecha_act = CASE 
                                     WHEN s.fecha_act IS NOT NULL AND TRIM(CAST(s.fecha_act AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
                                     THEN CAST(s.fecha_act AS TIMESTAMP WITH TIME ZONE) ELSE m.fecha_act END,
-                                nivel_tarifario = COALESCE(s."nivel tarifario", s.nivel_tarifario, m.nivel_tarifario),
-                                tipo_de_giro = COALESCE(s."tipo de giro", s.tipo_de_giro, m.tipo_de_giro),
+                                nivel_tarifario = COALESCE(s.nivel_tarifario, m.nivel_tarifario),
+                                tipo_de_giro = COALESCE(s.tipo_de_giro, m.tipo_de_giro),
                                 "primer instalación" = CASE 
-                                    WHEN s."primer instalación" IS NOT NULL AND TRIM(CAST(s."primer instalación" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
-                                    THEN CAST(s."primer instalación" AS TIMESTAMP WITH TIME ZONE) ELSE m."primer instalación" END,
+                                    WHEN s.primer_instalacion IS NOT NULL AND TRIM(CAST(s.primer_instalacion AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                                    THEN CAST(s.primer_instalacion AS TIMESTAMP WITH TIME ZONE) ELSE m."primer instalación" END,
                                 obs = COALESCE(s.obs, m.obs),
                                 etapa = COALESCE(CAST(s.etapa AS TEXT), m.etapa)
                             FROM "Medidores"."_staging_medidores_sheets" AS s
@@ -1661,7 +1672,6 @@ with tab3:
           st.error(
               f"Error al actualizar la tabla desde Google Sheets: {e}"
           )
-
   st.markdown(
       "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
   )
