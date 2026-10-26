@@ -1908,13 +1908,13 @@ with tab4:
     st.subheader("🛠️ Gestión de la tabla: usuarios_miaa_conmedidor (Etapa 2)")
     st.markdown(
         "Desde esta sección puedes auditar y sincronizar (UPSERT) la hoja **`etapa2`** de Google Sheets contra la base de datos "
-        "identificando primero por **Predio_Viv** y respaldándose con **Cliente**."
+        "utilizando como llave principal el número de **Cliente** y respaldándose con **Predio_Viv**."
     )
 
     with st.container(border=True):
-        st.markdown("#### 🔍 Paso 1: Auditoría de Predios y Clientes (Sheet vs PostgreSQL)")
+        st.markdown("#### 🔍 Paso 1: Auditoría Avanzada por Cliente / Predio")
         st.markdown(
-            "Haz clic en el botón para analizar el Google Sheet comparando por Predio_Viv y secundariamente por Cliente."
+            "Haz clic en el botón para analizar el Google Sheet comparando primero por Cliente y secundariamente por Predio_Viv."
         )
 
         if st.button("Ejecutar Auditoría Avanzada (Etapa 2)", key="btn_auditar_etapa2", use_container_width=True):
@@ -1956,15 +1956,14 @@ with tab4:
                             p = row["Predio_Viv_clean"]
                             c = row["Cliente_clean"]
                             
-                            p_valido = p != "" and p.lower() not in ["none", "nan", "null", "nat", "0"]
                             c_valido = c != "" and c.lower() not in ["none", "nan", "null", "nat", "0"]
+                            p_valido = p != "" and p.lower() not in ["none", "nan", "null", "nat", "0"]
 
                             encontrado = False
-                            if p_valido and p in set_pg_predios:
+                            # Llave principal: Cliente (porque nunca cambia aunque se le asigne predio nuevo)
+                            if c_valido and c in set_pg_clientes:
                                 encontrado = True
-                            elif not p_valido and c_valido and c in set_pg_clientes:
-                                encontrado = True
-                            elif p_valido and c_valido and (p in set_pg_predios or c in set_pg_clientes):
+                            elif p_valido and p in set_pg_predios:
                                 encontrado = True
 
                             if encontrado:
@@ -1990,10 +1989,10 @@ with tab4:
 
     if st.session_state.get("audit_listos", False):
         with st.container(border=True):
-            st.markdown("#### ⚡ Paso 2: Sincronización Controlada por Predio o Cliente")
+            st.markdown("#### ⚡ Paso 2: Sincronización Controlada por Cliente / Predio")
             st.markdown(
                 "Una vez verificada la auditoría, marca la casilla y presiona el botón para actualizar los registros "
-                "existentes (por Predio o Cliente) e insertar los nuevos."
+                "existentes (buscando por Cliente o Predio) e insertar los nuevos."
             )
 
             confirmar_upsert_etapa2 = st.checkbox(
@@ -2001,7 +2000,7 @@ with tab4:
                 key="chk_confirmar_upsert_etapa2",
             )
 
-            if st.button("Ejecutar Sincronización (UPSERT) por Predio/Cliente", type="primary", key="btn_ejecutar_upsert_etapa2", use_container_width=True):
+            if st.button("Ejecutar Sincronización (UPSERT) por Cliente/Predio", type="primary", key="btn_ejecutar_upsert_etapa2", use_container_width=True):
                 if not confirmar_upsert_etapa2:
                     st.error("Debes marcar la casilla de confirmación para ejecutar la sincronización.")
                 else:
@@ -2022,13 +2021,13 @@ with tab4:
                             chunksize=5000,
                         )
 
-                        agregar_log('⚡ [PASO 1/2] Actualizando registros existentes por Predio o Cliente...')
+                        agregar_log('⚡ [PASO 1/2] Actualizando registros existentes por Cliente o Predio...')
 
-                        # UPDATE utilizando Predio_Viv como primera llave y Cliente como respaldo secundario
+                        # UPDATE dando prioridad al Cliente (para capturar cuando se llena un predio nulo) y respaldando por Predio
                         query_update_existentes = text("""
                             UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
                             SET 
-                                "Cliente" = COALESCE(NULLIF(CAST(s."Cliente" AS TEXT), '')::INTEGER, u."Cliente"),
+                                "Predio_Viv" = COALESCE(NULLIF(s."Predio_Viv_clean", ''), u."Predio_Viv"),
                                 "Nombre" = COALESCE(NULLIF(s."Nombre", ''), u."Nombre"),
                                 "Colonia" = COALESCE(NULLIF(s."Colonia", ''), u."Colonia"),
                                 "Domicilio" = COALESCE(NULLIF(s."Domicilio", ''), u."Domicilio"),
@@ -2073,9 +2072,9 @@ with tab4:
                                 etapa = '2'
                             FROM "Usuarios"."_staging_usuarios_etapa2" AS s
                             WHERE (
-                                (s."Predio_Viv_clean" != '' AND TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean")
+                                (s."Cliente" IS NOT NULL AND u."Cliente" = NULLIF(CAST(s."Cliente" AS TEXT), '')::INTEGER)
                                 OR 
-                                ((s."Predio_Viv_clean" = '' OR s."Predio_Viv_clean" IS NULL) AND u."Cliente" = NULLIF(CAST(s."Cliente" AS TEXT), '')::INTEGER)
+                                (s."Predio_Viv_clean" != '' AND TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean")
                             );
                         """)
 
@@ -2087,7 +2086,7 @@ with tab4:
                             conn.commit()
                             filas_actualizadas = res_up.rowcount if hasattr(res_up, "rowcount") else 0
 
-                            agregar_log('⚡ [PASO 2/2] Insertando nuevos registros por Predio o Cliente...')
+                            agregar_log('⚡ [PASO 2/2] Insertando nuevos registros...')
 
                             query_insert_nuevos = text("""
                                 INSERT INTO "Usuarios"."usuarios_miaa_conmedidor" (
@@ -2148,9 +2147,9 @@ with tab4:
                                 WHERE NOT EXISTS (
                                     SELECT 1 FROM "Usuarios"."usuarios_miaa_conmedidor" AS u
                                     WHERE (
-                                        (s."Predio_Viv_clean" != '' AND TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean")
+                                        (s."Cliente" IS NOT NULL AND u."Cliente" = NULLIF(CAST(s."Cliente" AS TEXT), '')::INTEGER)
                                         OR 
-                                        (u."Cliente" = NULLIF(CAST(s."Cliente" AS TEXT), '')::INTEGER)
+                                        (s."Predio_Viv_clean" != '' AND TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean")
                                     )
                                 );
                             """)
