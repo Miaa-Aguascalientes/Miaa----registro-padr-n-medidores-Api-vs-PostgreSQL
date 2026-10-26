@@ -1907,8 +1907,8 @@ with tab3:
 with tab4:
     st.subheader("🛠️ Gestión de la tabla: usuarios_miaa_conmedidor (Etapa 2)")
     st.markdown(
-        "Desde esta sección puedes auditar la hoja **`etapa2`** de Google Sheets contra la base de datos "
-        "utilizando como llave **Predio_Viv** (y respaldándose con **Cliente** si el predio no existe)."
+        "Desde esta sección puedes auditar y sincronizar (UPSERT) la hoja **`etapa2`** de Google Sheets contra la base de datos "
+        "identificando primero por **Predio_Viv** y respaldándose con **Cliente**."
     )
 
     with st.container(border=True):
@@ -1935,7 +1935,6 @@ with tab4:
                     if not col_predio or not col_cliente:
                         st.error("No se encontraron las columnas clave 'Predio_Viv' o 'Cliente' en el Sheet.")
                     else:
-                        # Limpieza de llaves
                         df_auditoría["Predio_Viv_clean"] = df_auditoría[col_predio].fillna("").astype(str).str.strip()
                         df_auditoría["Cliente_clean"] = df_auditoría[col_cliente].fillna("").astype(str).str.strip()
 
@@ -1950,7 +1949,6 @@ with tab4:
                         set_pg_predios = set(df_pg_datos["predio_pg"].dropna().astype(str).str.strip())
                         set_pg_clientes = set(df_pg_datos["cliente_pg"].dropna().astype(str).str.strip())
 
-                        # Clasificación de registros usando Predio_Viv y respaldando con Cliente
                         existentes = 0
                         nuevos = 0
 
@@ -1977,7 +1975,7 @@ with tab4:
                         st.session_state.df_sheet_audit = df_auditoría
                         st.session_state.audit_listos = True
 
-                        st.success(f"¡Auditoría completada exitosamente!")
+                        st.success("¡Auditoría completada exitosamente!")
                         
                         col_a1, col_a2, col_a3 = st.columns(3)
                         with col_a1:
@@ -1992,10 +1990,10 @@ with tab4:
 
     if st.session_state.get("audit_listos", False):
         with st.container(border=True):
-            st.markdown("#### ⚡ Paso 2: Sincronización Controlada por Predio / Cliente")
+            st.markdown("#### ⚡ Paso 2: Sincronización Controlada por Predio o Cliente")
             st.markdown(
                 "Una vez verificada la auditoría, marca la casilla y presiona el botón para actualizar los registros "
-                "existentes (buscando por Predio o Cliente) e insertar los nuevos."
+                "existentes (por Predio o Cliente) e insertar los nuevos."
             )
 
             confirmar_upsert_etapa2 = st.checkbox(
@@ -2026,7 +2024,7 @@ with tab4:
 
                         agregar_log('⚡ [PASO 1/2] Actualizando registros existentes por Predio o Cliente...')
 
-                        # UPDATE buscando primero por Predio_Viv y si está vacío por Cliente
+                        # UPDATE utilizando Predio_Viv como primera llave y Cliente como respaldo secundario
                         query_update_existentes = text("""
                             UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
                             SET 
@@ -2051,7 +2049,7 @@ with tab4:
                                 "Longitud" = COALESCE(NULLIF(CAST(s."Longitud" AS TEXT), '')::DOUBLE PRECISION, u."Longitud"),
                                 "Plan_factu" = COALESCE(NULLIF(s."Plan_factu", ''), u."Plan_factu"),
                                 "Caso" = COALESCE(NULLIF(CAST(s."Caso" AS TEXT), '')::DOUBLE PRECISION, u."Caso"),
-                                "Ult_Anoma" = COALESCE(NULLIF(s."Ult_Anoma", ''), u."Ult_Anoma"),
+                                "Ult__Anoma" = COALESCE(NULLIF(s."Ult_Anoma", ''), u."Ult__Anoma"),
                                 "Gran_consu" = COALESCE(NULLIF(s."Gran_consu", ''), u."Gran_consu"),
                                 "Es_macrome" = COALESCE(NULLIF(s."Es_macrome", ''), u."Es_macrome"),
                                 "Cmo_Factur" = COALESCE(NULLIF(CAST(s."Cmo_Factur" AS TEXT), '')::DOUBLE PRECISION, u."Cmo_Factur"),
@@ -2089,14 +2087,14 @@ with tab4:
                             conn.commit()
                             filas_actualizadas = res_up.rowcount if hasattr(res_up, "rowcount") else 0
 
-                            agregar_log('⚡ [PASO 2/2] Insertando nuevos registros que no existen ni por predio ni por cliente...')
+                            agregar_log('⚡ [PASO 2/2] Insertando nuevos registros por Predio o Cliente...')
 
                             query_insert_nuevos = text("""
                                 INSERT INTO "Usuarios"."usuarios_miaa_conmedidor" (
                                     "Predio_Viv", "Cliente", "Nombre", "Colonia", "Domicilio", "Estado_del", 
                                     "Situaci_n", "Uso", "Nivel", "Tiene_medi", "Marca", "Modelo", "Medidor", 
                                     "Diametro_m", "Ubicaci_n", "Primer_ins", "Cambios_de", "Lectura_Ac", 
-                                    "Latitud", "Longitud", "Plan_factu", "Caso", "Ult_Anoma", "Gran_consu", 
+                                    "Latitud", "Longitud", "Plan_factu", "Caso", "Ult__Anoma", "Gran_consu", 
                                     "Es_macrome", "Cmo_Factur", "Cmo_Promed", "_Serie", "_Colonia", "_Domicilio", 
                                     "_Instalador", "_Tipo_instalador", "_Lectura_actual", "_Fecha_registro", 
                                     "_Fecha_instalacion", "_Ultima_actualizacion", geom, etapa
