@@ -1908,81 +1908,102 @@ with tab4:
     st.subheader("🛠️ Gestión de la tabla: usuarios_miaa_conmedidor (Etapa 2)")
     st.markdown(
         "Desde esta sección puedes auditar la hoja **`etapa2`** de Google Sheets contra la base de datos "
-        "y decidir cuándo insertar los nuevos registros o actualizar los existentes de forma segura."
+        "utilizando como llave **Predio_Viv** (y respaldándose con **Cliente** si el predio no existe)."
     )
 
     with st.container(border=True):
-        st.markdown("#### 🔍 Paso 1: Auditoría de Predios (Sheet vs PostgreSQL)")
+        st.markdown("#### 🔍 Paso 1: Auditoría de Predios y Clientes (Sheet vs PostgreSQL)")
         st.markdown(
-            "Haz clic en el botón para analizar el Google Sheet y conocer el desglose exacto de qué predios "
-            "ya se encuentran en la base de datos y cuáles son completamente nuevos."
+            "Haz clic en el botón para analizar el Google Sheet comparando por Predio_Viv y secundariamente por Cliente."
         )
 
-        if st.button("Ejecutar Auditoría de Predios (Etapa 2)", key="btn_auditar_etapa2", use_container_width=True):
+        if st.button("Ejecutar Auditoría Avanzada (Etapa 2)", key="btn_auditar_etapa2", use_container_width=True):
             try:
                 sheet_etapa2_csv_url = "https://docs.google.com/spreadsheets/d/1Ovj2DZ19Y8H4BtamnVwB71c2dyHC3dyVmau-tMbWre8/export?format=csv&gid=1668332296"
                 
-                agregar_log("📥 [AUDITORÍA] Descargando datos de la hoja 'etapa2' para análisis...")
-                df_auditoría = pd.read_csv(sheet_etapa2_csv_url, low_memory=False)
+                agregar_log("📥 [AUDITORÍA] Descargando datos completos de la hoja 'etapa2'...")
+                df_auditoría = pd.read_csv(sheet_etapa2_csv_url, low_memory=False, dtype=str)
 
                 if df_auditoría.empty:
                     st.error("El Google Sheet está vacío.")
                 else:
                     df_auditoría.columns = df_auditoría.columns.str.strip()
+                    
                     col_predio = next((c for c in ["Predio_Viv", "predio_viv", "predio", "PredioViv"] if c in df_auditoría.columns), None)
+                    col_cliente = next((c for c in ["Cliente", "cliente", "numCliente"] if c in df_auditoría.columns), None)
 
-                    if not col_predio:
-                        st.error("No se encontró la columna clave de predio en el Sheet.")
+                    if not col_predio or not col_cliente:
+                        st.error("No se encontraron las columnas clave 'Predio_Viv' o 'Cliente' en el Sheet.")
                     else:
-                        df_auditoría["Predio_Viv_clean"] = df_auditoría[col_predio].astype(str).str.strip()
-                        df_auditoría = df_auditoría[
-                            ~df_auditoría["Predio_Viv_clean"].str.lower().isin(["none", "nan", "", "null", "0", "nat"])
-                        ].copy()
+                        # Limpieza de llaves
+                        df_auditoría["Predio_Viv_clean"] = df_auditoría[col_predio].fillna("").astype(str).str.strip()
+                        df_auditoría["Cliente_clean"] = df_auditoría[col_cliente].fillna("").astype(str).str.strip()
 
                         engine_pg = obtener_motor_postgres()
 
                         with engine_pg.connect() as conn_aud:
-                            df_pg_predios = pd.read_sql(
-                                'SELECT DISTINCT TRIM(CAST("Predio_Viv" AS TEXT)) as predio_pg FROM "Usuarios"."usuarios_miaa_conmedidor" WHERE "Predio_Viv" IS NOT NULL',
+                            df_pg_datos = pd.read_sql(
+                                'SELECT DISTINCT TRIM(CAST("Predio_Viv" AS TEXT)) as predio_pg, "Cliente" as cliente_pg FROM "Usuarios"."usuarios_miaa_conmedidor"',
                                 con=conn_aud
                             )
                         
-                        set_pg_predios = set(df_pg_predios["predio_pg"].dropna().astype(str).str.strip())
-                        set_sheet_predios = set(df_auditoría["Predio_Viv_clean"].tolist())
+                        set_pg_predios = set(df_pg_datos["predio_pg"].dropna().astype(str).str.strip())
+                        set_pg_clientes = set(df_pg_datos["cliente_pg"].dropna().astype(str).str.strip())
 
-                        predios_existentes = set_sheet_predios.intersection(set_pg_predios)
-                        predios_nuevos = set_sheet_predios.difference(set_pg_predios)
+                        # Clasificación de registros usando Predio_Viv y respaldando con Cliente
+                        existentes = 0
+                        nuevos = 0
+
+                        for _, row in df_auditoría.iterrows():
+                            p = row["Predio_Viv_clean"]
+                            c = row["Cliente_clean"]
+                            
+                            p_valido = p != "" and p.lower() not in ["none", "nan", "null", "nat", "0"]
+                            c_valido = c != "" and c.lower() not in ["none", "nan", "null", "nat", "0"]
+
+                            encontrado = False
+                            if p_valido and p in set_pg_predios:
+                                encontrado = True
+                            elif not p_valido and c_valido and c in set_pg_clientes:
+                                encontrado = True
+                            elif p_valido and c_valido and (p in set_pg_predios or c in set_pg_clientes):
+                                encontrado = True
+
+                            if encontrado:
+                                existentes += 1
+                            else:
+                                nuevos += 1
 
                         st.session_state.df_sheet_audit = df_auditoría
                         st.session_state.audit_listos = True
 
-                        st.success("¡Auditoría completada con éxito!")
+                        st.success(f"¡Auditoría completada exitosamente!")
                         
                         col_a1, col_a2, col_a3 = st.columns(3)
                         with col_a1:
-                            st.metric("Total Registros en Sheet", len(set_sheet_predios))
+                            st.metric("Total Registros en Sheet", len(df_auditoría))
                         with col_a2:
-                            st.metric("Predios que Ya Existen (Actualizables)", len(predios_existentes))
+                            st.metric("Registros que Ya Existen (Actualizables)", existentes)
                         with col_a3:
-                            st.metric("Predios Nuevos (Insertables)", len(predios_nuevos))
+                            st.metric("Registros Nuevos (Insertables)", nuevos)
 
             except Exception as e:
                 st.error(f"Error al realizar la auditoría: {e}")
 
     if st.session_state.get("audit_listos", False):
         with st.container(border=True):
-            st.markdown("#### ⚡ Paso 2: Sincronización Controlada (Insertar Nuevos y Actualizar Existentes)")
+            st.markdown("#### ⚡ Paso 2: Sincronización Controlada por Predio / Cliente")
             st.markdown(
-                "Una vez revisada la auditoría, marca la casilla de confirmación y presiona el botón para aplicar "
-                "los cambios en la tabla `usuarios_miaa_conmedidor` respetando estrictamente todos los campos y formatos."
+                "Una vez verificada la auditoría, marca la casilla y presiona el botón para actualizar los registros "
+                "existentes (buscando por Predio o Cliente) e insertar los nuevos."
             )
 
             confirmar_upsert_etapa2 = st.checkbox(
-                "⚠️ Confirmo que deseo actualizar los registros existentes e insertar los nuevos desde la hoja `etapa2`",
+                "⚠️ Confirmo que deseo actualizar/insertar los registros de la hoja `etapa2`",
                 key="chk_confirmar_upsert_etapa2",
             )
 
-            if st.button("Ejecutar Sincronización (UPSERT) Controlada", type="primary", key="btn_ejecutar_upsert_etapa2", use_container_width=True):
+            if st.button("Ejecutar Sincronización (UPSERT) por Predio/Cliente", type="primary", key="btn_ejecutar_upsert_etapa2", use_container_width=True):
                 if not confirmar_upsert_etapa2:
                     st.error("Debes marcar la casilla de confirmación para ejecutar la sincronización.")
                 else:
@@ -2003,8 +2024,9 @@ with tab4:
                             chunksize=5000,
                         )
 
-                        agregar_log('⚡ [PASO 1/2] Actualizando registros existentes en "Usuarios"."usuarios_miaa_conmedidor"...')
+                        agregar_log('⚡ [PASO 1/2] Actualizando registros existentes por Predio o Cliente...')
 
+                        # UPDATE buscando primero por Predio_Viv y si está vacío por Cliente
                         query_update_existentes = text("""
                             UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
                             SET 
@@ -2052,7 +2074,11 @@ with tab4:
                                 END,
                                 etapa = '2'
                             FROM "Usuarios"."_staging_usuarios_etapa2" AS s
-                            WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean";
+                            WHERE (
+                                (s."Predio_Viv_clean" != '' AND TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean")
+                                OR 
+                                ((s."Predio_Viv_clean" = '' OR s."Predio_Viv_clean" IS NULL) AND u."Cliente" = NULLIF(CAST(s."Cliente" AS TEXT), '')::INTEGER)
+                            );
                         """)
 
                         with engine_pg.connect() as conn:
@@ -2063,7 +2089,7 @@ with tab4:
                             conn.commit()
                             filas_actualizadas = res_up.rowcount if hasattr(res_up, "rowcount") else 0
 
-                            agregar_log('⚡ [PASO 2/2] Insertando nuevos registros en "Usuarios"."usuarios_miaa_conmedidor"...')
+                            agregar_log('⚡ [PASO 2/2] Insertando nuevos registros que no existen ni por predio ni por cliente...')
 
                             query_insert_nuevos = text("""
                                 INSERT INTO "Usuarios"."usuarios_miaa_conmedidor" (
@@ -2123,7 +2149,11 @@ with tab4:
                                 FROM "Usuarios"."_staging_usuarios_etapa2" AS s
                                 WHERE NOT EXISTS (
                                     SELECT 1 FROM "Usuarios"."usuarios_miaa_conmedidor" AS u
-                                    WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean"
+                                    WHERE (
+                                        (s."Predio_Viv_clean" != '' AND TRIM(CAST(u."Predio_Viv" AS TEXT)) = s."Predio_Viv_clean")
+                                        OR 
+                                        (u."Cliente" = NULLIF(CAST(s."Cliente" AS TEXT), '')::INTEGER)
+                                    )
                                 );
                             """)
 
@@ -2141,7 +2171,7 @@ with tab4:
                         st.success(
                             f"¡Sincronización completada! "
                             f"Registros actualizados: **{filas_actualizadas:,}** | "
-                            f"Nuevos predios insertados: **{filas_insertadas:,}**"
+                            f"Nuevos registros insertados: **{filas_insertadas:,}**"
                         )
                         st.rerun()
 
