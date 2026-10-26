@@ -1941,7 +1941,6 @@ with tab4:
 
                         engine_pg = obtener_motor_postgres()
 
-                        # Consultar predios existentes en PostgreSQL
                         with engine_pg.connect() as conn_aud:
                             df_pg_predios = pd.read_sql(
                                 'SELECT DISTINCT TRIM(CAST("Predio_Viv" AS TEXT)) as predio_pg FROM "Usuarios"."usuarios_miaa_conmedidor" WHERE "Predio_Viv" IS NOT NULL',
@@ -1951,15 +1950,13 @@ with tab4:
                         set_pg_predios = set(df_pg_predios["predio_pg"].dropna().astype(str).str.strip())
                         set_sheet_predios = set(df_auditoría["Predio_Viv_clean"].tolist())
 
-                        # Cruces
                         predios_existentes = set_sheet_predios.intersection(set_pg_predios)
                         predios_nuevos = set_sheet_predios.difference(set_pg_predios)
 
-                        # Guardar en session_state para mantener la vista
                         st.session_state.df_sheet_audit = df_auditoría
                         st.session_state.audit_listos = True
 
-                        st.success(f"¡Auditoría completada con éxito!")
+                        st.success("¡Auditoría completada con éxito!")
                         
                         col_a1, col_a2, col_a3 = st.columns(3)
                         with col_a1:
@@ -1972,7 +1969,6 @@ with tab4:
             except Exception as e:
                 st.error(f"Error al realizar la auditoría: {e}")
 
-    # Paso 2: Ejecución del UPSERT controlado
     if st.session_state.get("audit_listos", False):
         with st.container(border=True):
             st.markdown("#### ⚡ Paso 2: Sincronización Controlada (Insertar Nuevos y Actualizar Existentes)")
@@ -2149,5 +2145,5 @@ with tab4:
                         )
                         st.rerun()
 
-                except Exception as e:
-                    st.error(f"Error al ejecutar la sincronización: {e}")
+                    except Exception as e:
+                        st.error(f"Error al ejecutar la sincronización: {e}")
