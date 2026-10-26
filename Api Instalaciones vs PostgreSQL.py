@@ -1533,145 +1533,111 @@ with tab3:
           # URL de exportación directa a CSV de la hoja 'etapa1' (gid=632917467)
           sheet_csv_url = "https://docs.google.com/spreadsheets/d/1Ovj2DZ19Y8H4BtamnVwB71c2dyHC3dyVmau-tMbWre8/export?format=csv&gid=632917467"
 
-          agregar_log(
-              "📥 [GOOGLE SHEETS] Descargando datos de la hoja 'etapa1'..."
-          )
+          agregar_log("📥 [GOOGLE SHEETS] Descargando datos de la hoja 'etapa1'...")
           df_sheets = pd.read_csv(sheet_csv_url)
 
           if df_sheets.empty:
-            st.error(
-                "No se pudieron obtener datos desde el Google Sheet o la hoja"
-                " está vacía."
-            )
+              st.error("No se pudieron obtener datos desde el Google Sheet o la hoja está vacía.")
           else:
-            # 1. Normalizar nombres de columnas en Pandas para evitar errores de sintaxis SQL
-            df_sheets.columns = df_sheets.columns.str.strip().str.lower()
+              # 1. Normalizar encabezados del Sheet
+              df_sheets.columns = df_sheets.columns.str.strip().str.lower()
 
-            # Mapa de renombrado para asegurar coincidencia exacta con PostgreSQL
-            renombrar_columnas = {
-                "en_columpi": "en_columpi",
-                "en_columpio": "en_columpi",
-                "nivel tarifario": "nivel_tarifario",
-                "tipo de giro": "tipo_de_giro",
-                "primer instalación": "primer_instalacion",
-                "primer instalacion": "primer_instalacion",
-            }
-            df_sheets.rename(columns=renombrar_columnas, inplace=True)
+              # Renombrar columnas del Staging a identificadores limpios
+              renombrar_columnas = {
+                  "en_columpi": "en_columpi",
+                  "en_columpio": "en_columpi",
+                  "nivel tarifario": "nivel_tarifario",
+                  "nivel_tarifario": "nivel_tarifario",
+                  "tipo de giro": "tipo_de_giro",
+                  "tipo_de_giro": "tipo_de_giro",
+                  "primer instalación": "primer_instalacion",
+                  "primer instalacion": "primer_instalacion"
+              }
+              df_sheets.rename(columns=renombrar_columnas, inplace=True)
 
-            if "predio" not in df_sheets.columns:
-              st.error(
-                  "El archivo de Google Sheets no contiene la columna"
-                  " clave 'predio'."
-              )
-            else:
-              engine_pg = obtener_motor_postgres()
+              if "predio" not in df_sheets.columns:
+                  st.error("El archivo de Google Sheets no contiene la columna clave 'predio'.")
+              else:
+                  engine_pg = obtener_motor_postgres()
 
-              # Filtrar registros que tengan predio válido
-              df_sheets_clean = df_sheets.dropna(subset=["predio"]).copy()
-              df_sheets_clean["predio_clean"] = (
-                  df_sheets_clean["predio"].astype(str).str.strip()
-              )
+                  df_sheets_clean = df_sheets.dropna(subset=["predio"]).copy()
+                  df_sheets_clean["predio_clean"] = df_sheets_clean["predio"].astype(str).str.strip()
 
-              agregar_log(
-                  "📦 [GOOGLE SHEETS] Se obtuvieron"
-                  f" {len(df_sheets_clean):,} registros. Subiendo a tabla"
-                  " de paso (staging)..."
-              )
+                  agregar_log(f"📦 [GOOGLE SHEETS] Se obtuvieron {len(df_sheets_clean):,} registros. Subiendo a staging...")
 
-              # Subir DataFrame a tabla de paso temporal en PostgreSQL
-              df_sheets_clean.to_sql(
-                  "_staging_medidores_sheets",
-                  con=engine_pg,
-                  schema="Medidores",
-                  if_exists="replace",
-                  index=False,
-                  chunksize=5000,
-              )
+                  df_sheets_clean.to_sql(
+                      "_staging_medidores_sheets",
+                      con=engine_pg,
+                      schema="Medidores",
+                      if_exists="replace",
+                      index=False,
+                      chunksize=5000
+                  )
 
-              agregar_log(
-                  "⚡ [DB UPDATE] Ejecutando UPDATE masivo en"
-                  ' "Medidores"."medidores_inteligentes"...'
-              )
+                  agregar_log("⚡ [DB UPDATE] Ejecutando UPDATE masivo en 'Medidores'.'medidores_inteligentes'...")
 
-              # 2. Query de UPDATE masivo limpia de comentarios y referenciando columnas ya normalizadas
-              query_update_sheets = text("""
-                            UPDATE "Medidores"."medidores_inteligentes" AS m
-                            SET 
-                                geom = CASE 
-                                    WHEN s.geom IS NOT NULL 
-                                         AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN')
-                                         AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%'
-                                    THEN ST_GeomFromWKB(decode(TRIM(CAST(s.geom AS TEXT)), 'hex'))
-                                    WHEN s.geom IS NOT NULL 
-                                         AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN')
-                                         AND (TRIM(CAST(s.geom AS TEXT)) LIKE 'POINT%' OR TRIM(CAST(s.geom AS TEXT)) LIKE 'SRID=%')
-                                    THEN ST_GeomFromText(TRIM(CAST(s.geom AS TEXT)))
-                                    ELSE m.geom 
-                                END,
-                                cliente = CASE 
-                                    WHEN s.cliente IS NOT NULL AND TRIM(CAST(s.cliente AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
-                                    THEN CAST(s.cliente AS INTEGER) ELSE m.cliente END,
-                                serie = CASE 
-                                    WHEN s.serie IS NOT NULL AND TRIM(CAST(s.serie AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
-                                    THEN CAST(s.serie AS BIGINT) ELSE m.serie END,
-                                fecha_lev = COALESCE(s.fecha_lev, m.fecha_lev),
-                                domicilio = COALESCE(s.domicilio, m.domicilio),
-                                colonia = COALESCE(s.colonia, m.colonia),
-                                accesible = COALESCE(s.accesible, m.accesible),
-                                en_columpi = COALESCE(s.en_columpi, m.en_columpi),
-                                estatus = COALESCE(s.estatus, m.estatus),
-                                marca = COALESCE(s.marca, m.marca),
-                                modelo = COALESCE(s.modelo, m.modelo),
-                                diametro_m = COALESCE(s.diametro_m, m.diametro_m),
-                                observacio = COALESCE(s.observacio, m.observacio),
-                                nom_sup = COALESCE(s.nom_sup, m.nom_sup),
-                                ult_editor = COALESCE(s.ult_editor, m.ult_editor),
-                                fecha_act = CASE 
-                                    WHEN s.fecha_act IS NOT NULL AND TRIM(CAST(s.fecha_act AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
-                                    THEN CAST(s.fecha_act AS TIMESTAMP WITH TIME ZONE) ELSE m.fecha_act END,
-                                nivel_tarifario = COALESCE(s.nivel_tarifario, m.nivel_tarifario),
-                                tipo_de_giro = COALESCE(s.tipo_de_giro, m.tipo_de_giro),
-                                "primer instalación" = CASE 
-                                    WHEN s.primer_instalacion IS NOT NULL AND TRIM(CAST(s.primer_instalacion AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
-                                    THEN CAST(s.primer_instalacion AS TIMESTAMP WITH TIME ZONE) ELSE m."primer instalación" END,
-                                obs = COALESCE(s.obs, m.obs),
-                                etapa = COALESCE(CAST(s.etapa AS TEXT), m.etapa)
-                            FROM "Medidores"."_staging_medidores_sheets" AS s
-                            WHERE TRIM(CAST(m.predio AS TEXT)) = s.predio_clean
-                              AND s.predio_clean NOT IN ('none', 'nan', '', 'nat', '0', 'null', 'None', 'NaN');
-                        """)
+                  # 2. Query con comillas dobles en los nombres de columna destino con espacio en PostGIS
+                  query_update_sheets = text("""
+                      UPDATE "Medidores"."medidores_inteligentes" AS m
+                      SET 
+                          geom = CASE 
+                              WHEN s.geom IS NOT NULL 
+                                   AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN')
+                                   AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%'
+                              THEN ST_GeomFromWKB(decode(TRIM(CAST(s.geom AS TEXT)), 'hex'))
+                              WHEN s.geom IS NOT NULL 
+                                   AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN')
+                                   AND (TRIM(CAST(s.geom AS TEXT)) LIKE 'POINT%' OR TRIM(CAST(s.geom AS TEXT)) LIKE 'SRID=%')
+                              THEN ST_GeomFromText(TRIM(CAST(s.geom AS TEXT)))
+                              ELSE m.geom 
+                          END,
+                          cliente = CASE 
+                              WHEN s.cliente IS NOT NULL AND TRIM(CAST(s.cliente AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                              THEN CAST(s.cliente AS INTEGER) ELSE m.cliente END,
+                          serie = CASE 
+                              WHEN s.serie IS NOT NULL AND TRIM(CAST(s.serie AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                              THEN CAST(s.serie AS BIGINT) ELSE m.serie END,
+                          fecha_lev = COALESCE(s.fecha_lev, m.fecha_lev),
+                          domicilio = COALESCE(s.domicilio, m.domicilio),
+                          colonia = COALESCE(s.colonia, m.colonia),
+                          accesible = COALESCE(s.accesible, m.accesible),
+                          en_columpi = COALESCE(s.en_columpi, m.en_columpi),
+                          estatus = COALESCE(s.estatus, m.estatus),
+                          marca = COALESCE(s.marca, m.marca),
+                          modelo = COALESCE(s.modelo, m.modelo),
+                          diametro_m = COALESCE(s.diametro_m, m.diametro_m),
+                          observacio = COALESCE(s.observacio, m.observacio),
+                          nom_sup = COALESCE(s.nom_sup, m.nom_sup),
+                          ult_editor = COALESCE(s.ult_editor, m.ult_editor),
+                          fecha_act = CASE 
+                              WHEN s.fecha_act IS NOT NULL AND TRIM(CAST(s.fecha_act AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                              THEN CAST(s.fecha_act AS TIMESTAMP WITH TIME ZONE) ELSE m.fecha_act END,
+                          "nivel tarifario" = COALESCE(s.nivel_tarifario, m."nivel tarifario"),
+                          "tipo de giro" = COALESCE(s.tipo_de_giro, m."tipo de giro"),
+                          "primer instalación" = CASE 
+                              WHEN s.primer_instalacion IS NOT NULL AND TRIM(CAST(s.primer_instalacion AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
+                              THEN CAST(s.primer_instalacion AS TIMESTAMP WITH TIME ZONE) ELSE m."primer instalación" END,
+                          obs = COALESCE(s.obs, m.obs),
+                          etapa = COALESCE(CAST(s.etapa AS TEXT), m.etapa)
+                      FROM "Medidores"."_staging_medidores_sheets" AS s
+                      WHERE TRIM(CAST(m.predio AS TEXT)) = s.predio_clean
+                        AND s.predio_clean NOT IN ('none', 'nan', '', 'nat', '0', 'null', 'None', 'NaN');
+                  """)
 
-              with engine_pg.connect() as conn_up:
-                result_up = conn_up.execute(query_update_sheets)
-                conn_up.commit()
-                filas_actualizadas = (
-                    result_up.rowcount if hasattr(result_up, "rowcount") else 0
-                )
+                  with engine_pg.connect() as conn_up:
+                      result_up = conn_up.execute(query_update_sheets)
+                      conn_up.commit()
+                      filas_actualizadas = result_up.rowcount if hasattr(result_up, "rowcount") else 0
 
-                # Limpiar tabla temporal
-                conn_up.execute(
-                    text(
-                        'DROP TABLE IF EXISTS'
-                        ' "Medidores"."_staging_medidores_sheets"'
-                    )
-                )
-                conn_up.commit()
+                      conn_up.execute(text('DROP TABLE IF EXISTS "Medidores"."_staging_medidores_sheets"'))
+                      conn_up.commit()
 
-              agregar_log(
-                  "🎉 [ACTUALIZACIÓN COMPLETADA] Registros actualizados en"
-                  f" medidores_inteligentes: {filas_actualizadas:,} desde Google"
-                  " Sheets."
-              )
-              st.success(
-                  "¡Actualización completada exitosamente! Registros"
-                  f" actualizados: **{filas_actualizadas:,}**"
-              )
-              st.rerun()
+                  agregar_log(f"🎉 [ACTUALIZACIÓN COMPLETADA] Registros actualizados en medidores_inteligentes: {filas_actualizadas:,} desde Google Sheets.")
+                  st.success(f"¡Actualización completada exitosamente! Registros actualizados: **{filas_actualizadas:,}**")
+                  st.rerun()
 
         except Exception as e:
-          st.error(
-              f"Error al actualizar la tabla desde Google Sheets: {e}"
-          )
+            st.error(f"Error al actualizar la tabla desde Google Sheets: {e}")
   st.markdown(
       "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
   )
