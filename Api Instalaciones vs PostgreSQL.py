@@ -2002,7 +2002,7 @@ with tab4:
                                 ' "Usuarios"."usuarios_miaa_conmedidor"...'
                             )
 
-                            # Query de UPDATE mapeando todos los campos exactos de tu captura de pantalla
+                            # Query de UPDATE corregida con casting explícito para campos numéricos
                             query_update_existentes = text("""
                                 UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
                                 SET 
@@ -2017,8 +2017,8 @@ with tab4:
                                     "Tiene_medi" = COALESCE(s."Tiene_medi", u."Tiene_medi"),
                                     "Marca" = COALESCE(s."Marca", u."Marca"),
                                     "Modelo" = COALESCE(s."Modelo", u."Modelo"),
-                                    "Medidor" = COALESCE(s."Medidor", u."Medidor"),
-                                    "Diametro_m" = COALESCE(s."Diametro_m", u."Diametro_m"),
+                                    "Medidor" = CASE WHEN s."Medidor" IS NOT NULL AND TRIM(CAST(s."Medidor" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Medidor" AS DOUBLE PRECISION) ELSE u."Medidor" END,
+                                    "Diametro_m" = CASE WHEN s."Diametro_m" IS NOT NULL AND TRIM(CAST(s."Diametro_m" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Diametro_m" AS DOUBLE PRECISION) ELSE u."Diametro_m" END,
                                     "Ubicaci_n" = COALESCE(s."Ubicaci_n", u."Ubicaci_n"),
                                     "Primer_ins" = CASE WHEN s."Primer_ins" IS NOT NULL AND TRIM(CAST(s."Primer_ins" AS TEXT)) NOT IN ('', 'none', 'nan', 'null') THEN CAST(s."Primer_ins" AS TIMESTAMP WITH TIME ZONE) ELSE u."Primer_ins" END,
                                     "Cambios_de" = COALESCE(s."Cambios_de", u."Cambios_de"),
