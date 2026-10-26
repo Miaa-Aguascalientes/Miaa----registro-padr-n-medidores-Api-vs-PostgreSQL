@@ -1496,152 +1496,123 @@ with tab3:
       " `Medidores` en tu base de datos PostgreSQL."
   )
 
-  # ==========================================
-  # SECCIÓN NUEVA: ACTUALIZAR DESDE GOOGLE SHEETS (HOJA ETAPA1)
-  # ==========================================
   with st.container(border=True):
+    st.markdown("#### 🔢 Asignar Etapa 1 a todos los registros")
     st.markdown(
-        "#### 📊 Actualizar Registros de `medidores_inteligentes` desde Google"
-        " Sheets (`etapa1`)"
-    )
-    st.markdown(
-        "Esta función lee los datos del Google Sheet en la hoja **`etapa1`**"
-        " y actualiza de forma masiva los campos correspondientes en la tabla"
-        ' `"Medidores"."medidores_inteligentes"` realizando la coincidencia'
-        " por el campo **`predio`**."
+        "Esta acción actualizará el campo **etapa** con el valor **1** en"
+        " absolutamente todos los registros de la tabla"
+        " `medidores_inteligentes`."
     )
 
-    confirmar_update_sheets = st.checkbox(
-        "⚠️ Confirmo que deseo actualizar la tabla `medidores_inteligentes` con"
-        " los datos cargados desde el Google Sheet",
-        key="chk_confirmar_update_sheets",
+    confirmar_etapa = st.checkbox(
+        "⚠️ Confirmo que deseo actualizar el campo etapa a 1 para todos los"
+        " registros de medidores_inteligentes",
+        key="chk_confirmar_etapa_1",
     )
 
     if st.button(
-        "Ejecutar Actualización desde Google Sheets",
+        "Establecer etapa = 1 en toda la tabla",
         type="primary",
-        key="btn_ejecutar_update_sheets",
+        key="btn_ejecutar_etapa_1",
         use_container_width=True,
     ):
-      if not confirmar_update_sheets:
+      if not confirmar_etapa:
         st.error(
-            "Debes marcar la casilla de confirmación para ejecutar la"
-            " actualización desde Google Sheets."
+            "Debes marcar la casilla de confirmación para ejecutar esta"
+            " actualización masiva."
         )
       else:
         try:
-          # URL de exportación directa a CSV de la hoja 'etapa1' (gid=632917467)
-          sheet_csv_url = "https://docs.google.com/spreadsheets/d/1Ovj2DZ19Y8H4BtamnVwB71c2dyHC3dyVmau-tMbWre8/export?format=csv&gid=632917467"
+          engine_pg = obtener_motor_postgres()
+          query_update_etapa = text(
+              'UPDATE "Medidores"."medidores_inteligentes" SET etapa = \'1\''
+          )
 
-          agregar_log("📥 [GOOGLE SHEETS] Descargando datos de la hoja 'etapa1'...")
-          df_sheets = pd.read_csv(sheet_csv_url)
+          with engine_pg.connect() as conn_etapa:
+            conn_etapa.execute(query_update_etapa)
+            conn_etapa.commit()
 
-          if df_sheets.empty:
-              st.error("No se pudieron obtener datos desde el Google Sheet o la hoja está vacía.")
-          else:
-              # 1. Normalizar encabezados del Sheet
-              df_sheets.columns = df_sheets.columns.str.strip().str.lower()
-
-              # Renombrar columnas del Staging a identificadores limpios
-              renombrar_columnas = {
-                  "en_columpi": "en_columpi",
-                  "en_columpio": "en_columpi",
-                  "nivel tarifario": "nivel_tarifario",
-                  "nivel_tarifario": "nivel_tarifario",
-                  "tipo de giro": "tipo_de_giro",
-                  "tipo_de_giro": "tipo_de_giro",
-                  "primer instalación": "primer_instalacion",
-                  "primer instalacion": "primer_instalacion"
-              }
-              df_sheets.rename(columns=renombrar_columnas, inplace=True)
-
-              if "predio" not in df_sheets.columns:
-                  st.error("El archivo de Google Sheets no contiene la columna clave 'predio'.")
-              else:
-                  engine_pg = obtener_motor_postgres()
-
-                  df_sheets_clean = df_sheets.dropna(subset=["predio"]).copy()
-                  df_sheets_clean["predio_clean"] = df_sheets_clean["predio"].astype(str).str.strip()
-
-                  agregar_log(f"📦 [GOOGLE SHEETS] Se obtuvieron {len(df_sheets_clean):,} registros. Subiendo a staging...")
-
-                  df_sheets_clean.to_sql(
-                      "_staging_medidores_sheets",
-                      con=engine_pg,
-                      schema="Medidores",
-                      if_exists="replace",
-                      index=False,
-                      chunksize=5000
-                  )
-
-                  agregar_log("⚡ [DB UPDATE] Ejecutando UPDATE masivo en 'Medidores'.'medidores_inteligentes'...")
-
-                  # 2. Query con comillas dobles en los nombres de columna destino con espacio en PostGIS
-                  query_update_sheets = text("""
-                      UPDATE "Medidores"."medidores_inteligentes" AS m
-                      SET 
-                          geom = CASE 
-                              WHEN s.geom IS NOT NULL 
-                                   AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN')
-                                   AND TRIM(CAST(s.geom AS TEXT)) LIKE '01%'
-                              THEN ST_GeomFromWKB(decode(TRIM(CAST(s.geom AS TEXT)), 'hex'))
-                              WHEN s.geom IS NOT NULL 
-                                   AND TRIM(CAST(s.geom AS TEXT)) NOT IN ('', 'none', 'nan', 'null', 'None', 'NaN')
-                                   AND (TRIM(CAST(s.geom AS TEXT)) LIKE 'POINT%' OR TRIM(CAST(s.geom AS TEXT)) LIKE 'SRID=%')
-                              THEN ST_GeomFromText(TRIM(CAST(s.geom AS TEXT)))
-                              ELSE m.geom 
-                          END,
-                          cliente = CASE 
-                              WHEN s.cliente IS NOT NULL AND TRIM(CAST(s.cliente AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
-                              THEN CAST(s.cliente AS INTEGER) ELSE m.cliente END,
-                          serie = CASE 
-                              WHEN s.serie IS NOT NULL AND TRIM(CAST(s.serie AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
-                              THEN CAST(s.serie AS BIGINT) ELSE m.serie END,
-                          fecha_lev = COALESCE(s.fecha_lev, m.fecha_lev),
-                          domicilio = COALESCE(s.domicilio, m.domicilio),
-                          colonia = COALESCE(s.colonia, m.colonia),
-                          accesible = COALESCE(s.accesible, m.accesible),
-                          en_columpi = COALESCE(s.en_columpi, m.en_columpi),
-                          estatus = COALESCE(s.estatus, m.estatus),
-                          marca = COALESCE(s.marca, m.marca),
-                          modelo = COALESCE(s.modelo, m.modelo),
-                          diametro_m = COALESCE(s.diametro_m, m.diametro_m),
-                          observacio = COALESCE(s.observacio, m.observacio),
-                          nom_sup = COALESCE(s.nom_sup, m.nom_sup),
-                          ult_editor = COALESCE(s.ult_editor, m.ult_editor),
-                          fecha_act = CASE 
-                              WHEN s.fecha_act IS NOT NULL AND TRIM(CAST(s.fecha_act AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
-                              THEN CAST(s.fecha_act AS TIMESTAMP WITH TIME ZONE) ELSE m.fecha_act END,
-                          "nivel tarifario" = COALESCE(s.nivel_tarifario, m."nivel tarifario"),
-                          "tipo de giro" = COALESCE(s.tipo_de_giro, m."tipo de giro"),
-                          "primer instalación" = CASE 
-                              WHEN s.primer_instalacion IS NOT NULL AND TRIM(CAST(s.primer_instalacion AS TEXT)) NOT IN ('', 'none', 'nan', 'null') 
-                              THEN CAST(s.primer_instalacion AS TIMESTAMP WITH TIME ZONE) ELSE m."primer instalación" END,
-                          obs = COALESCE(s.obs, m.obs),
-                          etapa = COALESCE(CAST(s.etapa AS TEXT), m.etapa)
-                      FROM "Medidores"."_staging_medidores_sheets" AS s
-                      WHERE TRIM(CAST(m.predio AS TEXT)) = s.predio_clean
-                        AND s.predio_clean NOT IN ('none', 'nan', '', 'nat', '0', 'null', 'None', 'NaN');
-                  """)
-
-                  with engine_pg.connect() as conn_up:
-                      result_up = conn_up.execute(query_update_sheets)
-                      conn_up.commit()
-                      filas_actualizadas = result_up.rowcount if hasattr(result_up, "rowcount") else 0
-
-                      conn_up.execute(text('DROP TABLE IF EXISTS "Medidores"."_staging_medidores_sheets"'))
-                      conn_up.commit()
-
-                  agregar_log(f"🎉 [ACTUALIZACIÓN COMPLETADA] Registros actualizados en medidores_inteligentes: {filas_actualizadas:,} desde Google Sheets.")
-                  st.success(f"¡Actualización completada exitosamente! Registros actualizados: **{filas_actualizadas:,}**")
-                  st.rerun()
-
+          agregar_log(
+              "⚡ [DB UPDATE] Se actualizó exitosamente el campo 'etapa' a '1'"
+              " en todos los registros de Medidores.medidores_inteligentes."
+          )
+          st.success(
+              "¡Se han actualizado correctamente todos los registros con la"
+              " etapa 1!"
+          )
+          st.rerun()
         except Exception as e:
-            st.error(f"Error al actualizar la tabla desde Google Sheets: {e}")
+          st.error(f"Error al actualizar la tabla medidores_inteligentes: {e}")
+
   st.markdown(
       "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
   )
 
+  with st.container(border=True):
+    st.markdown(
+        "#### 🔗 Sincronizar Etapa desde `medidores_inteligentes` hacia"
+        " `usuarios_miaa_conmedidor`"
+    )
+    st.markdown(
+        "Esta acción realiza un `JOIN` utilizando el campo de predio"
+        " (`Predio_Viv`) para insertar o actualizar el número del campo"
+        " **etapa** desde `medidores_inteligentes` hacia la tabla"
+        ' `"Usuarios"."usuarios_miaa_conmedidor"`.'
+    )
+
+    confirmar_join_etapa = st.checkbox(
+        "⚠ Confirmo que deseo actualizar el campo etapa en"
+        " `usuarios_miaa_conmedidor` basado en la coincidencia de predio",
+        key="chk_confirmar_join_etapa",
+    )
+
+    if st.button(
+        "Ejecutar Sincronización de Etapa por Predio",
+        type="primary",
+        key="btn_ejecutar_join_etapa",
+        use_container_width=True,
+    ):
+      if not confirmar_join_etapa:
+        st.error(
+            "Debes marcar la casilla de confirmación para ejecutar la"
+            " sincronización."
+        )
+      else:
+        try:
+          engine_pg = obtener_motor_postgres()
+          query_update_join = text("""
+                        UPDATE "Usuarios"."usuarios_miaa_conmedidor" AS u
+                        SET etapa = m.etapa
+                        FROM "Medidores"."medidores_inteligentes" AS m
+                        WHERE TRIM(CAST(u."Predio_Viv" AS TEXT)) = TRIM(CAST(m.predio AS TEXT))
+                          AND m.etapa IS NOT NULL
+                    """)
+
+          with engine_pg.connect() as conn_join:
+            resultado_update = conn_join.execute(query_update_join)
+            conn_join.commit()
+            filas_afectadas = (
+                resultado_update.rowcount
+                if hasattr(resultado_update, "rowcount")
+                else "desconocido"
+            )
+
+          agregar_log(
+              "🔗 [JOIN EXITOSO] Se sincronizó el campo 'etapa' desde"
+              " medidores_inteligentes hacia usuarios_miaa_conmedidor por"
+              f" predio. Filas afectadas: {filas_afectadas}"
+          )
+          st.success(
+              f"¡Sincronización por predio completada con éxito! Filas"
+              f" actualizadas: {filas_afectadas}"
+          )
+          st.rerun()
+        except Exception as e:
+          st.error(f"Error al ejecutar la actualización por JOIN: {e}")
+
+  st.markdown(
+      "<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True
+  )
 
   with st.container(border=True):
     st.markdown("#### 🔍 Diagnóstico de Predios No Insertados / No Cruzados")
