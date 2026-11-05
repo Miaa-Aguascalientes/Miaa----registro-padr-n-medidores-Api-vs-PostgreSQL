@@ -12,7 +12,7 @@ import streamlit as st
 ZONA_MEXICO = ZoneInfo("America/Mexico_City")
 
 st.set_page_config(
-    page_title="Sistema Scada",
+    page_title="Registros de instalacion Mysql vs PostgresSQL",
     page_icon="https://www.miaa.mx/favicon.ico",
     layout="wide",
     initial_sidebar_state="expanded",
